@@ -1,0 +1,50 @@
+{
+  "name": "stardew-wiki-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile chat assistant that answers Stardew Valley questions from the official wiki.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "npm run build:client && node scripts/dev.mjs",
+    "dev:worker": "node scripts/dev.mjs",
+    "wiki-proxy": "node scripts/wiki-proxy.mjs",
+    "build:client": "vite build",
+    "build": "npm run build:client && wrangler deploy --dry-run",
+    "deploy": "npm run build:client && wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "wrangler types && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "types": "wrangler types"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zht7063/stardew-wiki-assistant.git"
+  },
+  "license": "MIT",
+  "overrides": {
+    "@earendil-works/pi-ai": "0.85.1"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.3",
+    "@earendil-works/pi-ai": "0.85.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "typebox": "^1.3.7",
+    "wrangler": "^4.151.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261015.1",
+    "@types/node": "^22.19.19",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.9.3",
+    "undici": "^7.30.1",
+    "vite": "^7.1.10",
+    "vitest": "^3.2.4"
+  }
+}
