@@ -11,6 +11,9 @@
       "enabled": true
     }
   },
+  "routes": [
+    { "pattern": "stardewiki.tianyubai.cn", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",

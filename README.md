@@ -82,6 +82,8 @@ npx wrangler secret put APP_PASSWORD
 npm run deploy
 ```
 
+`npm run deploy` publishes the Worker on the custom domain `https://stardewiki.tianyubai.cn` (`routes` in `wrangler.jsonc`, `custom_domain: true`). That hostname is already live.
+
 `DEEPSEEK_MODEL` defaults to `deepseek-flash` on `https://api.deepseek.com`. `deepseek-chat` was removed from that API on 2026-07-24. Change `vars.DEEPSEEK_MODEL` to point elsewhere.
 
 Weekly refresh is `.github/workflows/ingest.yml` (Sundays 18:00 UTC, or run it by hand). Repository secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. `WIKI_DB_ID` is optional when `wrangler.jsonc` already has the real database id. Actions runners are datacenter IPs and may get the same Cloudflare challenge as Workers. If the job fails with “Cloudflare challenge”, run the same `npm run ingest -- --target remote` command locally. The script exits on the first challenge instead of retrying for the whole corpus.
