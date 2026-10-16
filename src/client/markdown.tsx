@@ -13,6 +13,11 @@ const components: Components = {
       <table>{children}</table>
     </div>
   ),
+  pre: ({ children }) => (
+    <div className="code-scroll">
+      <pre>{children}</pre>
+    </div>
+  ),
 };
 
 export function Markdown({ text }: { text: string }) {

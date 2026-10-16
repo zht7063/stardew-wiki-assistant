@@ -73,12 +73,17 @@ export function App() {
       const overlap = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
       document.documentElement.style.setProperty("--kb", `${overlap}px`);
     };
+    const pin = () => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+    };
     viewport.addEventListener("resize", sync);
     viewport.addEventListener("scroll", sync);
+    window.addEventListener("scroll", pin);
     sync();
     return () => {
       viewport.removeEventListener("resize", sync);
       viewport.removeEventListener("scroll", sync);
+      window.removeEventListener("scroll", pin);
     };
   }, []);
 
@@ -281,7 +286,7 @@ export function App() {
         </button>
         <div className="brand">
           <Mark />
-          <div>
+          <div className="brand-text">
             <h1>{empty ? "星露问答" : title}</h1>
             <p>翻一翻 wiki 再回答</p>
           </div>
