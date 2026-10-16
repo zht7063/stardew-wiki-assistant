@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { dedupeCitations } from "../shared/citations";
 import type { Citation, SessionSummary, VisibleMessage } from "../shared/types";
 import {
   UnauthorizedError,
@@ -34,14 +35,7 @@ function relativeTime(timestamp: number): string {
 }
 
 function mergeCitations(current: Citation[], incoming: Citation[]): Citation[] {
-  const seen = new Set(current.map((page) => page.url));
-  const next = current.slice();
-  for (const page of incoming) {
-    if (seen.has(page.url)) continue;
-    seen.add(page.url);
-    next.push(page);
-  }
-  return next;
+  return dedupeCitations([...current, ...incoming]);
 }
 
 function Mark({ className = "mark" }: { className?: string }) {

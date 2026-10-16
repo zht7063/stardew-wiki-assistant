@@ -6,9 +6,16 @@ import type { WikiSource } from "./source";
 
 export type SqlParam = string | number | null;
 
+export interface SqlStatement {
+  sql: string;
+  params: SqlParam[];
+}
+
 export interface SqlExecutor {
   all<T>(sql: string, params: SqlParam[]): Promise<T[]>;
   run(sql: string, params: SqlParam[]): Promise<void>;
+  /** Run statements in one round trip when the backend supports it. */
+  batch?(statements: SqlStatement[]): Promise<void>;
 }
 
 export interface VectorHit {
@@ -52,27 +59,50 @@ const SELECT_PAGE = `SELECT lang, title, url, rev_id, counterpart_lang, counterp
   infobox_json, sections_json, search_text, body, updated_at
   FROM pages WHERE lang = ? AND title = ?`;
 
+function pageStatements(page: StoredPage): SqlStatement[] {
+  return [
+    {
+      sql: UPSERT_PAGE,
+      params: [
+        page.lang,
+        page.title,
+        page.url,
+        page.revId,
+        page.counterpart?.lang ?? null,
+        page.counterpart?.title ?? null,
+        page.counterpart?.url ?? null,
+        JSON.stringify(page.infobox),
+        JSON.stringify(page.sections),
+        page.searchText,
+        page.body,
+        Date.now(),
+      ],
+    },
+    {
+      sql: `DELETE FROM pages_fts WHERE title = ? AND lang = ?`,
+      params: [page.title, page.lang],
+    },
+    {
+      sql: `INSERT INTO pages_fts (title, search_text, lang) VALUES (?, ?, ?)`,
+      params: [page.title, page.searchText, page.lang],
+    },
+  ];
+}
+
 export async function upsertStoredPage(sql: SqlExecutor, page: StoredPage): Promise<void> {
-  await sql.run(UPSERT_PAGE, [
-    page.lang,
-    page.title,
-    page.url,
-    page.revId,
-    page.counterpart?.lang ?? null,
-    page.counterpart?.title ?? null,
-    page.counterpart?.url ?? null,
-    JSON.stringify(page.infobox),
-    JSON.stringify(page.sections),
-    page.searchText,
-    page.body,
-    Date.now(),
-  ]);
-  await sql.run(`DELETE FROM pages_fts WHERE title = ? AND lang = ?`, [page.title, page.lang]);
-  await sql.run(`INSERT INTO pages_fts (title, search_text, lang) VALUES (?, ?, ?)`, [
-    page.title,
-    page.searchText,
-    page.lang,
-  ]);
+  await upsertStoredPages(sql, [page]);
+}
+
+/** A few pages per D1 call. Page bodies are large, so the groups stay small. */
+export async function upsertStoredPages(sql: SqlExecutor, pages: StoredPage[]): Promise<void> {
+  for (let index = 0; index < pages.length; index += 4) {
+    const statements = pages.slice(index, index + 4).flatMap((page) => pageStatements(page));
+    if (statements.length === 0) continue;
+    if (sql.batch) await sql.batch(statements);
+    else {
+      for (const statement of statements) await sql.run(statement.sql, statement.params);
+    }
+  }
 }
 
 export function matchQuery(needle: string): string | null {
@@ -160,6 +190,9 @@ interface ScoredHit extends SearchHit {
   score: number;
 }
 
+/** Vector-only hits below this cosine are neighbors, not the page she asked for. */
+const VECTOR_ONLY_MIN = 0.75;
+
 /**
  * Keyword search over D1/SQLite, with an optional vector list merged in.
  * Chinese queries use FTS5 trigrams (3+ characters) and a short-string fallback.
@@ -171,7 +204,6 @@ export class WikiIndex implements WikiSource {
   ) {}
 
   async search(query: string, lang: WikiLang): Promise<SearchPayload> {
-    const needle = pickNeedle(query);
     try {
       const countRow = await this.sql.all<{ n: number }>(`SELECT COUNT(*) AS n FROM pages`, []);
       const total = Number(countRow[0]?.n ?? 0);
@@ -183,18 +215,38 @@ export class WikiIndex implements WikiSource {
           note: "索引还是空的。在自己的电脑上跑一次 npm run ingest，答案才会有内容。",
         };
       }
-      const lexical = await this.lexical(lang, needle);
-      const vectorHits = this.vectors ? await this.vectors(query).catch(() => []) : [];
-      let note: string | undefined;
+      const needles = needlesFor(query);
+      const lexical = await this.lexical(lang, needles);
+      const preferredStrong = lexical.filter((row) => rowMatchesNeedle(row, needles));
       let extra: PageRow[] = [];
-      const preferredVectors = vectorHits.filter((hit) => hit.lang === lang);
-      if (lexical.length + preferredVectors.length < 2) {
-        extra = await this.lexical(otherLang(lang), needle);
-        if (extra.length > 0 || vectorHits.some((hit) => hit.lang !== lang)) {
-          note = lang === "zh" ? "中文索引里很少，下面也用了英文页。" : "英文索引里很少，下面也用了中文页。";
+      let note: string | undefined;
+      // Vector neighbors must not block the langlink fallback. A missing Chinese
+      // article still has an English page whose counterpart title is the query.
+      if (preferredStrong.length === 0) {
+        extra = await this.lexical(otherLang(lang), needles);
+        const otherStrong = extra.filter((row) => rowMatchesNeedle(row, needles));
+        if (otherStrong.length > 0) {
+          note =
+            lang === "zh"
+              ? "中文索引里没有这个标题，下面是英文 wiki 的对应页面。"
+              : "英文索引里没有这个标题，下面是中文 wiki 的对应页面。";
+        } else if (extra.length > 0) {
+          note =
+            lang === "zh"
+              ? "中文索引里没有同名页面。下面这些英文页只是正文里提到了这个词，标题对不上就不要当成那一页。"
+              : "英文索引里没有同名页面。下面这些中文页只是正文里提到了这个词，标题对不上就不要当成那一页。";
         }
       }
-      const hits = await this.merge(lang, needle, [...lexical, ...extra], vectorHits);
+      const preferredWeak = lexical.filter((row) => !rowMatchesNeedle(row, needles));
+      const otherStrong = extra.filter((row) => rowMatchesNeedle(row, needles));
+      const otherWeak = extra.filter((row) => !rowMatchesNeedle(row, needles));
+      const strong = dedupeRows([...preferredStrong, ...otherStrong]);
+      const rows = strong.length > 0 ? strong : dedupeRows([...preferredWeak, ...otherWeak]);
+      const vectorHits = this.vectors ? await this.vectors(query).catch(() => []) : [];
+      const hits = await this.merge(lang, needles, rows, filterVectorHits(vectorHits, rows));
+      if (hits.length === 0) {
+        note = "索引里没有对得上的页面。中文页可能还没导入，换一个更短的标题再试。";
+      }
       return { query, lang, results: hits.slice(0, 8), note };
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
@@ -260,53 +312,59 @@ export class WikiIndex implements WikiSource {
     return { from: source, note: "索引里没有这页的语言链接。" };
   }
 
-  private async lexical(lang: WikiLang, needle: string): Promise<PageRow[]> {
-    const exact = needle
-      ? await this.sql.all<PageRow>(SELECT_PAGE, [lang, needle])
-      : [];
-    const match = matchQuery(needle);
-    let fts: PageRow[] = [];
-    if (match) {
-      try {
-        fts = await this.sql.all<PageRow>(
-          `SELECT p.lang, p.title, p.url, p.rev_id, p.counterpart_lang, p.counterpart_title, p.counterpart_url,
-             p.infobox_json, p.sections_json, p.search_text, p.body, p.updated_at
-           FROM pages_fts
-           JOIN pages p ON p.title = pages_fts.title AND p.lang = pages_fts.lang
-           WHERE pages_fts MATCH ? AND p.lang = ?
-           ORDER BY bm25(pages_fts)
-           LIMIT 8`,
-          [match, lang],
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "";
-        if (message.includes("no such table")) throw error;
-        fts = [];
-      }
-    }
-    let short: PageRow[] = [];
-    if (needle && [...needle].length < 3) {
-      short = await this.sql.all<PageRow>(
+  private async lexical(lang: WikiLang, needles: string[]): Promise<PageRow[]> {
+    const rows: PageRow[] = [];
+    for (const needle of needles) {
+      if (!needle) continue;
+      const exact = await this.sql.all<PageRow>(SELECT_PAGE, [lang, needle]);
+      const titled = await this.sql.all<PageRow>(
         `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
            infobox_json, sections_json, search_text, body, updated_at
          FROM pages
-         WHERE lang = ? AND (title = ? OR instr(title, ?) > 0 OR instr(infobox_json, ?) > 0)
+         WHERE lang = ? AND (
+           title = ? OR instr(title, ?) > 0
+           OR counterpart_title = ? OR instr(ifnull(counterpart_title, ''), ?) > 0
+         )
          LIMIT 8`,
-        [lang, needle, needle, needle],
+        [lang, needle, needle, needle, needle],
       );
+      const match = matchQuery(needle);
+      let fts: PageRow[] = [];
+      if (match) {
+        try {
+          fts = await this.sql.all<PageRow>(
+            `SELECT p.lang, p.title, p.url, p.rev_id, p.counterpart_lang, p.counterpart_title, p.counterpart_url,
+               p.infobox_json, p.sections_json, p.search_text, p.body, p.updated_at
+             FROM pages_fts
+             JOIN pages p ON p.title = pages_fts.title AND p.lang = pages_fts.lang
+             WHERE pages_fts MATCH ? AND p.lang = ?
+             ORDER BY bm25(pages_fts)
+             LIMIT 8`,
+            [match, lang],
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (message.includes("no such table")) throw error;
+          fts = [];
+        }
+      }
+      let short: PageRow[] = [];
+      if ([...needle].length < 3) {
+        short = await this.sql.all<PageRow>(
+          `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
+             infobox_json, sections_json, search_text, body, updated_at
+           FROM pages
+           WHERE lang = ? AND (title = ? OR instr(title, ?) > 0 OR instr(infobox_json, ?) > 0)
+           LIMIT 8`,
+          [lang, needle, needle, needle],
+        );
+      }
+      rows.push(...exact, ...titled, ...fts, ...short);
     }
-    const seen = new Set<string>();
-    const rows: PageRow[] = [];
-    for (const row of [...exact, ...fts, ...short]) {
-      const key = `${row.lang}\0${row.title}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push(row);
-    }
-    return rows;
+    return dedupeRows(rows);
   }
 
-  private async merge(preferred: WikiLang, needle: string, rows: PageRow[], vectors: VectorHit[]): Promise<SearchHit[]> {
+  private async merge(preferred: WikiLang, needles: string[], rows: PageRow[], vectors: VectorHit[]): Promise<SearchHit[]> {
     const byKey = new Map<string, { row?: PageRow; vector?: number; lexicalRank: number }>();
     rows.forEach((row, index) => {
       byKey.set(`${row.lang}\0${row.title}`, { row, lexicalRank: index });
@@ -330,13 +388,14 @@ export class WikiIndex implements WikiSource {
       if (!lang) continue;
       let score = 1 / (1 + entry.lexicalRank);
       if (typeof entry.vector === "number") score += entry.vector;
-      if (entry.row.title === needle) score += 2;
-      if (lang === preferred) score += 0.15;
+      const matched = rowMatchesNeedle(entry.row, needles);
+      if (matched) score += 3;
+      if (lang === preferred && matched) score += 0.15;
       scored.push({
         title: entry.row.title,
         url: entry.row.url,
         lang,
-        snippet: snippet(entry.row.search_text, needle),
+        snippet: snippet(entry.row.search_text, needles[needles.length - 1] ?? ""),
         score,
       });
     }
@@ -353,6 +412,48 @@ export class WikiIndex implements WikiSource {
 export function pickNeedle(query: string): string {
   const candidates = queryCandidates(query);
   return candidates[candidates.length - 1] || query.trim();
+}
+
+function needlesFor(query: string): string[] {
+  const candidates = queryCandidates(query).map((value) => normalizeTitle(value)).filter(Boolean);
+  if (candidates.length === 0 && query.trim()) candidates.push(normalizeTitle(query));
+  return candidates;
+}
+
+function rowMatchesNeedle(row: PageRow, needles: string[]): boolean {
+  const title = normalizeTitle(row.title).toLocaleLowerCase();
+  const counterpart = normalizeTitle(row.counterpart_title ?? "").toLocaleLowerCase();
+  return needles.some((needle) => {
+    const normalized = normalizeTitle(needle).toLocaleLowerCase();
+    if ([...normalized].length < 2) return false;
+    return (
+      title === normalized ||
+      counterpart === normalized ||
+      title.includes(normalized) ||
+      (counterpart.length > 0 && counterpart.includes(normalized))
+    );
+  });
+}
+
+function filterVectorHits(hits: VectorHit[], rows: PageRow[]): VectorHit[] {
+  const keys = new Set(rows.map((row) => `${row.lang}\0${row.title}`));
+  return hits.filter((hit) => {
+    if (keys.has(`${hit.lang}\0${hit.title}`)) return true;
+    if (rows.length > 0) return false;
+    return hit.score >= VECTOR_ONLY_MIN;
+  });
+}
+
+function dedupeRows(rows: PageRow[]): PageRow[] {
+  const seen = new Set<string>();
+  const out: PageRow[] = [];
+  for (const row of rows) {
+    const key = `${row.lang}\0${row.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
 }
 
 export function normalizeTitle(title: string): string {

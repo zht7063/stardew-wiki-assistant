@@ -35,31 +35,26 @@ That talks to the wiki over HTTP/2. If you see a Cloudflare challenge, wait and 
 
 About 1,996 Chinese articles and 2,003 English articles (main namespace, non-redirects, measured October 2026). Ingest:
 
-1. Lists titles, then revision ids and langlinks, 15 titles at a time.
+1. Lists titles, then revision ids and langlinks, 20 titles at a time.
 2. Parses a page only when `lastrevid` changed. Rendered HTML is cleaned with the same infobox and table parser as before (templates are already expanded, so item names are Chinese).
-3. Stores the page in D1 and one 1024-dim embedding in Vectorize (`@cf/baai/bge-m3`).
-4. Waits 250ms between wiki calls and sends a descriptive User-Agent.
+3. Stores pages in D1 in small batches, and one 1024-dim embedding per page in Vectorize (`@cf/baai/bge-m3`), also batched.
+4. Sends a descriptive User-Agent, keeps about 100ms between wiki calls, and runs up to 3 parses at once. A dropped connection is retried with backoff. A page that still fails is skipped; a Cloudflare challenge stops the run.
 
-Search in the Worker uses FTS5 trigrams (this is what makes Chinese keywords match) and, when Workers AI responds within 2.5s, merges the nearest vectors. Chinese is preferred. If that side is thin, English pages are included and `get_page` follows langlinks. There is no live wiki fallback: a blocked fetch only adds a failed round trip.
+Search in the Worker uses FTS5 trigrams (this is what makes Chinese keywords match) and, when Workers AI responds within 2.5s, merges vectors that agree with those hits. Chinese titles are preferred. If the Chinese title is not in the index yet, search follows the stored langlink to the English page instead of a loosely similar neighbor. `get_page` reads that page. Citation cards are only pages whose text was actually returned. There is no live wiki fallback: a blocked fetch only adds a failed round trip.
 
 `WIKI_CACHE` is still bound to the production namespace `11d435912c9b4141be03abdd278f57cc`. The chat path does not read it. Local `wrangler dev` simulates that namespace, so the real id is fine locally.
 
 ## Deploy and first ingest
 
 1. `npx wrangler login`
-2. Create the database and paste the printed `database_id` over `00000000-0000-0000-0000-000000000000` in `wrangler.jsonc`:
+2. Production already has D1 database `stardew-wiki` (`242ec9c4-3485-47a0-a56f-3de8fbe9528d`) and Vectorize index `stardew-wiki` (1024 dimensions, cosine). Those ids are in `wrangler.jsonc`. On a new Cloudflare account, create them and paste the printed database id into `d1_databases[0].database_id`:
 
 ```bash
 npx wrangler d1 create stardew-wiki
-```
-
-3. Create the vector index (1024 dimensions, cosine). The name `stardew-wiki` matches `vectorize[0].index_name`.
-
-```bash
 npx wrangler vectorize create stardew-wiki --dimensions=1024 --metric=cosine
 ```
 
-4. Create a Cloudflare API token at https://dash.cloudflare.com/profile/api-tokens (Create Custom Token). Account permissions:
+3. Create a Cloudflare API token at https://dash.cloudflare.com/profile/api-tokens (Create Custom Token). Account permissions:
 
    - **D1: Edit**
    - **Workers AI: Read** (running a model). If a run returns 403, change this to Edit.
@@ -67,7 +62,7 @@ npx wrangler vectorize create stardew-wiki --dimensions=1024 --metric=cosine
 
    Account resources: the account that owns the Worker. Copy the account id from the dashboard sidebar or `npx wrangler whoami`.
 
-5. Apply the schema and ingest from your own computer (HTTP/2). The first run is on the order of 30–50 minutes because of the pause between wiki calls. Later runs skip unchanged pages.
+4. Apply the schema and ingest from your own computer (HTTP/2). A full first run of about 4,000 pages is on the order of 1–2 hours. An earlier build did about 150 pages in 11 minutes, because every page waited on its own wiki parse and several D1 calls; the 30–50 minute figure only counted the pause and was too low. Parses now overlap (3 at a time), revisions are loaded once per language, and D1 writes and vector upserts are batched. Later runs skip unchanged pages and finish much faster. `--pause-ms` defaults to 100. `--concurrency` defaults to 3 and will not go above 4.
 
 ```bash
 export CLOUDFLARE_API_TOKEN=...
@@ -76,9 +71,9 @@ npx wrangler d1 execute stardew-wiki --remote --file schema/wiki.sql
 npm run ingest -- --target remote
 ```
 
-`WIKI_DB_ID` overrides the id in `wrangler.jsonc` if you have not committed it yet. `--skip-vectors` writes D1 only. `--limit 50` caps pages per language.
+`WIKI_DB_ID` overrides the id in `wrangler.jsonc`. `--skip-vectors` writes D1 only. `--limit 50` caps pages per language. A transient `fetch failed` is retried with backoff (starting at 400ms). If that page still fails, ingest logs it and continues. A Cloudflare challenge still stops the run so it does not hammer the wiki.
 
-6. Secrets and deploy:
+5. Secrets and deploy:
 
 ```bash
 npx wrangler secret put DEEPSEEK_API_KEY

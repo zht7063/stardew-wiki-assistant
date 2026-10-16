@@ -1,5 +1,6 @@
 import { Agent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
+import { dedupeCitations } from "../shared/citations";
 import type { Citation, ClientEvent } from "../shared/types";
 import { SYSTEM_PROMPT } from "./prompt";
 
@@ -94,10 +95,10 @@ export async function runChatTurn(input: RunChatInput): Promise<RunChatResult> {
       emit({ type: "status", text: statusText(event.toolName, event.args) });
     }
     if (event.type === "tool_execution_end") {
-      for (const page of pagesFromDetails(event.result?.details)) {
-        if (!citations.some((existing) => existing.url === page.url)) citations.push(page);
-      }
-      if (citations.length > 0) emit({ type: "citations", pages: citations });
+      const next = dedupeCitations([...citations, ...pagesFromDetails(event.result?.details)]);
+      if (next.length === citations.length) return;
+      citations.splice(0, citations.length, ...next);
+      emit({ type: "citations", pages: citations });
     }
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       emit({ type: "token", text: event.assistantMessageEvent.delta });

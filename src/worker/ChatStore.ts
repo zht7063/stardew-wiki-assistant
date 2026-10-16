@@ -184,7 +184,6 @@ export class ChatStore extends DurableObject<Env> {
           });
           if (abort.signal.aborted) return;
           this.persist(sessionId, message, result.transcript);
-          send({ type: "citations", pages: result.citations });
           send({ type: "done", sessionId });
         } catch (error) {
           if (abort.signal.aborted) return;

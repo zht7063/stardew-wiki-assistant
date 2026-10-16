@@ -1,6 +1,7 @@
 import { readEmbeddingMatrix } from "../wiki/embeddings";
 import { EMBED_MODEL } from "../wiki/vectors";
-import type { SqlExecutor, SqlParam } from "../wiki/index-store";
+import type { SqlExecutor, SqlParam, SqlStatement } from "../wiki/index-store";
+import { isRetryableStatus, withBackoff } from "./retry";
 
 export interface CloudflareAuth {
   accountId: string;
@@ -25,10 +26,34 @@ export function httpD1Executor(auth: CloudflareAuth): SqlExecutor {
     async run(sql: string, params: SqlParam[]): Promise<void> {
       await d1Query(fetchImpl, auth, sql, params);
     },
+    async batch(statements: SqlStatement[]): Promise<void> {
+      await d1Batch(fetchImpl, auth, statements);
+    },
   };
 }
 
 async function d1Query(fetchImpl: typeof fetch, auth: CloudflareAuth, sql: string, params: SqlParam[]): Promise<unknown[]> {
+  return withBackoff(async () => {
+    const payload = await postD1(fetchImpl, auth, { sql, params });
+    return payload.result?.[0]?.results ?? [];
+  });
+}
+
+async function d1Batch(fetchImpl: typeof fetch, auth: CloudflareAuth, statements: SqlStatement[]): Promise<void> {
+  if (statements.length === 0) return;
+  await withBackoff(async () => {
+    const payload = await postD1(fetchImpl, auth, { batch: statements });
+    for (const row of payload.result ?? []) {
+      if (row && row.success === false) throw new Error("d1 http 500: a batched statement failed");
+    }
+  });
+}
+
+async function postD1(
+  fetchImpl: typeof fetch,
+  auth: CloudflareAuth,
+  body: { sql: string; params: SqlParam[] } | { batch: SqlStatement[] },
+): Promise<{ result?: Array<{ results?: unknown[]; success?: boolean }> }> {
   const response = await fetchImpl(
     `https://api.cloudflare.com/client/v4/accounts/${auth.accountId}/d1/database/${auth.databaseId}/query`,
     {
@@ -37,63 +62,70 @@ async function d1Query(fetchImpl: typeof fetch, auth: CloudflareAuth, sql: strin
         Authorization: `Bearer ${auth.token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ sql, params }),
+      body: JSON.stringify(body),
     },
   );
   const payload = (await response.json()) as {
     success?: boolean;
     errors?: Array<{ message?: string }>;
-    result?: Array<{ results?: unknown[] }>;
+    result?: Array<{ results?: unknown[]; success?: boolean }>;
   };
   if (!response.ok || payload.success === false) {
-    const message = payload.errors?.[0]?.message || `d1 http ${response.status}`;
-    throw new Error(message);
+    const detail = payload.errors?.[0]?.message || "d1 query failed";
+    const status = isRetryableStatus(response.status) ? response.status : response.status || 400;
+    throw new Error(`d1 http ${status}: ${detail}`);
   }
-  return payload.result?.[0]?.results ?? [];
+  return payload;
 }
 
 export async function embedRemote(auth: CloudflareAuth, texts: string[]): Promise<number[][]> {
   const fetchImpl = auth.fetchImpl ?? fetch;
-  const response = await fetchImpl(
-    `https://api.cloudflare.com/client/v4/accounts/${auth.accountId}/ai/run/${EMBED_MODEL}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${auth.token}`,
-        "Content-Type": "application/json",
+  return withBackoff(async () => {
+    const response = await fetchImpl(
+      `https://api.cloudflare.com/client/v4/accounts/${auth.accountId}/ai/run/${EMBED_MODEL}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text: texts }),
       },
-      body: JSON.stringify({ text: texts }),
-    },
-  );
-  const payload = (await response.json()) as { success?: boolean; errors?: Array<{ message?: string }> };
-  if (!response.ok || payload.success === false) {
-    const message = payload.errors?.[0]?.message || `ai http ${response.status}`;
-    throw new Error(message);
-  }
-  return readEmbeddingMatrix(payload);
+    );
+    const payload = (await response.json()) as { success?: boolean; errors?: Array<{ message?: string }> };
+    if (!response.ok || payload.success === false) {
+      const detail = payload.errors?.[0]?.message || "ai run failed";
+      throw new Error(`ai http ${response.status}: ${detail}`);
+    }
+    return readEmbeddingMatrix(payload);
+  });
 }
 
-export async function upsertRemoteVector(
-  auth: CloudflareAuth,
-  id: string,
-  values: number[],
-  metadata: { lang: string; title: string },
-): Promise<void> {
+export interface RemoteVector {
+  id: string;
+  values: number[];
+  metadata: { lang: string; title: string };
+}
+
+export async function upsertRemoteVectors(auth: CloudflareAuth, items: RemoteVector[]): Promise<void> {
+  if (items.length === 0) return;
   const fetchImpl = auth.fetchImpl ?? fetch;
-  const line = JSON.stringify({ id, values, metadata });
-  const response = await fetchImpl(
-    `https://api.cloudflare.com/client/v4/accounts/${auth.accountId}/vectorize/v2/indexes/${auth.indexName}/upsert`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${auth.token}`,
-        "Content-Type": "application/x-ndjson",
+  const body = `${items.map((item) => JSON.stringify(item)).join("\n")}\n`;
+  await withBackoff(async () => {
+    const response = await fetchImpl(
+      `https://api.cloudflare.com/client/v4/accounts/${auth.accountId}/vectorize/v2/indexes/${auth.indexName}/upsert`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          "Content-Type": "application/x-ndjson",
+        },
+        body,
       },
-      body: `${line}\n`,
-    },
-  );
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`vectorize http ${response.status}: ${text.slice(0, 180)}`);
-  }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`vectorize http ${response.status}: ${text.slice(0, 180)}`);
+    }
+  });
 }

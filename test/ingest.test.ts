@@ -67,7 +67,7 @@ describe("ingest pipeline", () => {
     await applySchema(sql);
     const wiki = new MediaWiki(fetchImpl, 0);
     const first = await ingestWiki({ wiki, target: targetFromSql(sql), langs: ["zh"] });
-    expect(first).toEqual({ seen: 1, updated: 1, skipped: 0 });
+    expect(first).toEqual({ seen: 1, updated: 1, skipped: 0, failed: 0 });
     const index = new WikiIndex(sql);
     const found = await index.search("阿比盖尔喜欢什么礼物？", "zh");
     expect(found.results[0]?.title).toBe("阿比盖尔");
@@ -81,5 +81,47 @@ describe("ingest pipeline", () => {
     expect(second.updated).toBe(0);
     expect(second.skipped).toBe(1);
     expect(calls.filter((call) => call === "parse")).toHaveLength(1);
+  });
+
+  it("retries a dropped fetch and keeps going when one page still fails", async () => {
+    let drops = 1;
+    let brokenAttempts = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (drops > 0) {
+        drops -= 1;
+        throw new Error("fetch failed");
+      }
+      if (url.searchParams.get("list") === "allpages") {
+        return Response.json({ query: { allpages: [{ title: "甲" }, { title: "乙" }] } });
+      }
+      if (url.searchParams.get("prop")?.includes("langlinks")) {
+        return Response.json({
+          query: {
+            pages: [
+              { title: "甲", lastrevid: 1 },
+              { title: "乙", lastrevid: 2 },
+            ],
+          },
+        });
+      }
+      if (url.searchParams.get("page") === "乙") {
+        brokenAttempts += 1;
+        throw new Error("fetch failed");
+      }
+      return Response.json({ parse: { title: "甲", text: "<p>甲的正文够长，能留下来。</p>" } });
+    };
+    const db = new DatabaseSync(":memory:");
+    const sql = sqliteExecutor(db);
+    await applySchema(sql);
+    const wiki = new MediaWiki(fetchImpl, 0, { retryBaseMs: 0, concurrency: 2 });
+    const stats = await ingestWiki({ wiki, target: targetFromSql(sql), langs: ["zh"], concurrency: 2 });
+    expect(stats.updated).toBe(1);
+    expect(stats.failed).toBe(1);
+    expect(stats.seen).toBe(2);
+    expect(brokenAttempts).toBe(5);
+    const index = new WikiIndex(sql);
+    const found = await index.search("甲", "zh");
+    expect(found.results[0]?.title).toBe("甲");
   });
 });
