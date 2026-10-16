@@ -46,10 +46,27 @@ describe("ingest parser", () => {
 });
 
 describe("ingest pipeline", () => {
+  it("preserves special characters in continuation tokens using form POST", async () => {
+    let calls = 0;
+    const wiki = new MediaWiki(async (input, init) => {
+      expect(new URL(input).search).toBe("");
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toMatchObject({ "Content-Type": "application/x-www-form-urlencoded" });
+      const params = new URLSearchParams(init?.body);
+      calls += 1;
+      if (calls === 1) return Response.json({ query: { allpages: [{ title: "Slime" }] }, continue: { apcontinue: "Special_Items_&_Powers" } });
+      expect(params.get("apcontinue")).toBe("Special_Items_&_Powers");
+      return Response.json({ query: { allpages: [{ title: "Special Items & Powers" }] } });
+    }, 0);
+    expect(await wiki.listTitles("en")).toEqual(["Slime", "Special Items & Powers"]);
+    expect(calls).toBe(2);
+  });
+
   it("loads a mocked wiki into sqlite and skips unchanged revisions", async () => {
     const calls: string[] = [];
-    const fetchImpl: typeof fetch = async (input) => {
+    const fetchImpl: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
+      url.search = String(init?.body ?? "");
       calls.push(url.searchParams.get("action") === "parse" ? "parse" : url.searchParams.get("list") || url.searchParams.get("prop") || "");
       if (url.searchParams.get("list") === "allpages") {
         return Response.json({ query: { allpages: [{ title: "阿比盖尔" }] } });
@@ -88,8 +105,9 @@ describe("ingest pipeline", () => {
 
   it("fills a missing portrait from pageimages without parsing the page again", async () => {
     let pass = 0;
-    const fetchImpl: typeof fetch = async (input) => {
+    const fetchImpl: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
+      url.search = String(init?.body ?? "");
       if (url.searchParams.get("list") === "allpages") {
         return Response.json({ query: { allpages: [{ title: "草莓" }] } });
       }
@@ -129,8 +147,9 @@ describe("ingest pipeline", () => {
 
   it("retries describe without pageimages when that module is missing", async () => {
     const props: string[] = [];
-    const fetchImpl: typeof fetch = async (input) => {
+    const fetchImpl: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
+      url.search = String(init?.body ?? "");
       const prop = url.searchParams.get("prop") ?? "";
       if (prop) props.push(prop);
       if (url.searchParams.get("list") === "allpages") {
@@ -154,8 +173,9 @@ describe("ingest pipeline", () => {
   it("retries a dropped fetch and keeps going when one page still fails", async () => {
     let drops = 1;
     let brokenAttempts = 0;
-    const fetchImpl: typeof fetch = async (input) => {
+    const fetchImpl: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
+      url.search = String(init?.body ?? "");
       if (drops > 0) {
         drops -= 1;
         throw new Error("fetch failed");

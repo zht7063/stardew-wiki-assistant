@@ -26,7 +26,7 @@ export interface PageMeta {
 
 export type WikiFetch = (
   input: string,
-  init?: { headers?: Record<string, string> },
+  init?: { headers?: Record<string, string>; method?: string; body?: string },
 ) => Promise<{ status: number; ok: boolean; text(): Promise<string> }>;
 
 export interface MediaWikiOptions {
@@ -178,8 +178,11 @@ export class MediaWiki {
       try {
         let response: { status: number; ok: boolean; text(): Promise<string> };
         try {
-          response = await this.fetchImpl(url.toString(), {
-            headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+          // Form POST avoids challenges triggered by some title/continuation query strings.
+          response = await this.fetchImpl(API[lang], {
+            method: "POST",
+            body: url.searchParams.toString(),
+            headers: { "User-Agent": USER_AGENT, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
           });
         } catch (error) {
           lastError = error instanceof Error ? error : new Error("fetch failed");
