@@ -38,8 +38,8 @@ async function main(): Promise<void> {
   let blocked = false;
   if (pageimages) {
     const agent = new Agent({ allowH2: true, connect: { timeout: 20_000 } });
-    const fetchImpl = async (input: string, init?: { headers?: Record<string, string> }) => {
-      const options: UndiciRequestInit = { dispatcher: agent, headers: init?.headers };
+    const fetchImpl = async (input: string, init?: { headers?: Record<string, string>; method?: string; body?: string }) => {
+      const options: UndiciRequestInit = { ...init, dispatcher: agent };
       return undiciFetch(input, options);
     };
     const wiki = new MediaWiki(fetchImpl, Number(arg("--pause-ms") ?? 100));
