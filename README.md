@@ -33,11 +33,7 @@ npm run typecheck
 ## Deploy
 
 1. `npx wrangler login`
-2. Create the page cache and paste the id into `kv_namespaces[0].id` in `wrangler.jsonc`. The id in the repo only exists so local simulation can boot.
-
-```bash
-npx wrangler kv namespace create WIKI_CACHE
-```
+2. `kv_namespaces[0].id` in `wrangler.jsonc` is the production `WIKI_CACHE` namespace (`11d435912c9b4141be03abdd278f57cc`). Local `wrangler dev` still simulates that namespace on disk, so the same id works for local development.
 
 3. Secrets:
 
