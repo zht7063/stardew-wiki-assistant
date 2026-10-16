@@ -1,4 +1,6 @@
 import type { Citation, WikiLang } from "../shared/types";
+import { wikiOrigin } from "../shared/images";
+import { extractInfoboxImage } from "./image";
 import { parseWikiHtml, queryCandidates, type InfoboxField } from "./parse";
 
 export const USER_AGENT =
@@ -42,6 +44,8 @@ export interface PagePayload {
   sections: string[];
   truncated: boolean;
   counterpart?: Citation;
+  /** Infobox portrait. Omitted when the page has no usable image. */
+  image?: string;
   note?: string;
   missing?: boolean;
 }
@@ -225,6 +229,7 @@ export class WikiClient {
     const parsedTitle = typeof data.parse.title === "string" ? data.parse.title : title;
     const html = asText(data.parse.text);
     const parsed = parseWikiHtml(html, { section });
+    const image = extractInfoboxImage(html, wikiOrigin(lang)) ?? undefined;
     const apiSections = Array.isArray(data.parse.sections)
       ? data.parse.sections
           .map((sectionRow: { line?: string }) =>
@@ -240,6 +245,7 @@ export class WikiClient {
       markdown: parsed.markdown,
       sections: apiSections.length > 0 ? apiSections : parsed.sections,
       truncated: parsed.truncated,
+      image,
       missing: false,
     };
   }

@@ -2,12 +2,17 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SqlExecutor, SqlParam, SqlStatement } from "../wiki/index-store";
-import { SCHEMA_SQL } from "../wiki/schema";
+import { IMAGE_COLUMN_SQL, SCHEMA_SQL, isDuplicateColumnError } from "../wiki/schema";
 
 export function openLocalDb(path: string): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(SCHEMA_SQL);
+  try {
+    db.exec(IMAGE_COLUMN_SQL);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+  }
   return db;
 }
 

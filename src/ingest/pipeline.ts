@@ -4,7 +4,7 @@ import type { SqlExecutor } from "../wiki/index-store";
 import { upsertStoredPage, upsertStoredPages } from "../wiki/index-store";
 import { pageUrl } from "../wiki/client";
 import { toStoredPage, vectorText, type StoredPage } from "../wiki/record";
-import { SCHEMA_STATEMENTS } from "../wiki/schema";
+import { IMAGE_COLUMN_SQL, SCHEMA_STATEMENTS, isDuplicateColumnError } from "../wiki/schema";
 import { MediaWiki, WikiBlockedError, type PageMeta } from "./mediawiki";
 
 export interface VectorWrite {
@@ -16,6 +16,9 @@ export interface VectorWrite {
 export interface IngestTarget {
   getRev(lang: WikiLang, title: string): Promise<number | null>;
   listRevs?(lang: WikiLang): Promise<Map<string, number>>;
+  /** Titles whose image_url is still empty. Used so a later ingest can fill portraits without re-parsing HTML. */
+  titlesMissingImage?(lang: WikiLang): Promise<Set<string>>;
+  patchImage?(lang: WikiLang, title: string, imageUrl: string): Promise<void>;
   put(page: StoredPage): Promise<void>;
   putMany?(pages: StoredPage[]): Promise<void>;
   putVector?(id: string, values: number[], metadata: { lang: string; title: string }): Promise<void>;
@@ -27,14 +30,26 @@ export interface IngestStats {
   updated: number;
   skipped: number;
   failed: number;
+  /** Portraits saved onto pages whose revision did not change. */
+  images: number;
 }
 
 export function vectorId(lang: string, title: string): string {
   return createHash("sha256").update(`${lang}\0${title}`).digest("hex").slice(0, 32);
 }
 
+export async function ensureImageColumn(sql: SqlExecutor): Promise<void> {
+  try {
+    await sql.run(IMAGE_COLUMN_SQL, []);
+  } catch (error) {
+    if (isDuplicateColumnError(error)) return;
+    throw error;
+  }
+}
+
 export async function applySchema(sql: SqlExecutor): Promise<void> {
   for (const statement of SCHEMA_STATEMENTS) await sql.run(statement, []);
+  await ensureImageColumn(sql);
 }
 
 export function targetFromSql(sql: SqlExecutor): IngestTarget {
@@ -57,6 +72,25 @@ export function targetFromSql(sql: SqlExecutor): IngestTarget {
       );
       return new Map(rows.map((row) => [row.title, row.rev_id]));
     },
+    async titlesMissingImage(lang) {
+      try {
+        const rows = await sql.all<{ title: string }>(
+          `SELECT title FROM pages WHERE lang = ? AND (image_url IS NULL OR image_url = '')`,
+          [lang],
+        );
+        return new Set(rows.map((row) => row.title));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/no such column/i.test(message)) return new Set();
+        throw error;
+      }
+    },
+    async patchImage(lang, title, imageUrl) {
+      await sql.run(
+        `UPDATE pages SET image_url = ? WHERE lang = ? AND title = ? AND (image_url IS NULL OR image_url = '')`,
+        [imageUrl, lang, title],
+      );
+    },
   };
 }
 
@@ -69,7 +103,7 @@ export async function ingestWiki(options: {
   embed?: (texts: string[]) => Promise<number[][]>;
   onProgress?: (message: string) => void;
 }): Promise<IngestStats> {
-  const stats: IngestStats = { seen: 0, updated: 0, skipped: 0, failed: 0 };
+  const stats: IngestStats = { seen: 0, updated: 0, skipped: 0, failed: 0, images: 0 };
   const log = options.onProgress ?? (() => undefined);
   const concurrency = Math.min(4, Math.max(1, options.concurrency ?? 3));
   let vectorsDisabled = false;
@@ -79,6 +113,7 @@ export async function ingestWiki(options: {
     const titles = await options.wiki.listTitles(lang, options.limit);
     log(`${lang}: ${titles.length} titles`);
     const known = options.target.listRevs ? await options.target.listRevs(lang) : null;
+    const missingImages = options.target.titlesMissingImage ? await options.target.titlesMissingImage(lang) : null;
     for (const batch of chunks(titles, 20)) {
       let metas: PageMeta[] = [];
       try {
@@ -96,6 +131,11 @@ export async function ingestWiki(options: {
         const rev = known ? (known.get(meta.title) ?? null) : await options.target.getRev(lang, meta.title);
         if (rev !== null && rev === meta.revId && meta.revId !== 0) {
           stats.skipped += 1;
+          if (meta.imageUrl && missingImages?.has(meta.title) && options.target.patchImage) {
+            await options.target.patchImage(lang, meta.title, meta.imageUrl);
+            missingImages.delete(meta.title);
+            stats.images += 1;
+          }
           continue;
         }
         pending.push(meta);
@@ -114,6 +154,7 @@ export async function ingestWiki(options: {
             revId: meta.revId,
             html: page.html,
             counterpart: meta.counterpart,
+            imageUrl: meta.imageUrl,
           });
         } catch (error) {
           if (error instanceof WikiBlockedError) throw error;
@@ -130,6 +171,11 @@ export async function ingestWiki(options: {
         }
         if (known) {
           for (const page of written) known.set(page.title, page.revId);
+        }
+        if (missingImages) {
+          for (const page of written) {
+            if (page.imageUrl) missingImages.delete(page.title);
+          }
         }
         const before = stats.updated;
         stats.updated += written.length;

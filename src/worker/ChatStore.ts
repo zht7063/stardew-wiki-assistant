@@ -5,6 +5,7 @@ import { createDeepSeekModel } from "../agent/model";
 import { runChatTurn } from "../agent/run";
 import { createWikiTools } from "../agent/tools";
 import { visibleFromTranscript } from "../agent/visible";
+import { citationFromUnknown } from "../shared/citations";
 import type { Citation, ClientEvent, SessionSummary, VisibleMessage } from "../shared/types";
 import { d1Executor } from "./d1-exec";
 import { WikiIndex } from "../wiki/index-store";
@@ -277,10 +278,8 @@ function parseCitations(raw: string): Citation[] {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
     return parsed.flatMap((page) => {
-      if (!isRecord(page)) return [];
-      if (typeof page.title !== "string" || typeof page.url !== "string") return [];
-      if (page.lang !== "zh" && page.lang !== "en") return [];
-      return [{ title: page.title, url: page.url, lang: page.lang }];
+      const citation = citationFromUnknown(page);
+      return citation ? [citation] : [];
     });
   } catch {
     return [];

@@ -42,6 +42,10 @@ About 1,996 Chinese articles and 2,003 English articles (main namespace, non-red
 
 Search in the Worker uses FTS5 trigrams (this is what makes Chinese keywords match) and, when Workers AI responds within 2.5s, merges vectors that agree with those hits. Chinese titles are preferred. If the Chinese title is not in the index yet, search follows the stored langlink to the English page instead of a loosely similar neighbor. `get_page` reads that page. Citation cards are only pages whose text was actually returned. There is no live wiki fallback: a blocked fetch only adds a failed round trip.
 
+The empty chat asks `GET /api/random?n=4` (same passphrase as the rest of `/api/*`) and turns four real Chinese pages — villagers, crops, fish, items — into questions. Redirects, disambiguation, and meta pages are left out. “换一批” asks for another sample. If the index is empty, the old fixed questions stay so the screen is not blank.
+
+Infobox portraits are stored in `pages.image_url`. Ingest reads the image from the rendered infobox, and uses MediaWiki `pageimages` when the HTML has no portrait. A later ingest can fill `image_url` for unchanged revisions from that `pageimages` response without downloading the HTML again. Citation cards show a small lazy thumbnail; tap it to enlarge. If the phone cannot hotlink the wiki, it asks `GET /api/img`, which only fetches `mediawiki/images` on the two wiki hosts and caches the bytes in KV and the Cache API. A missing image just leaves the card as text.
+
 `WIKI_CACHE` is still bound to the production namespace `11d435912c9b4141be03abdd278f57cc`. The chat path does not read it. Local `wrangler dev` simulates that namespace, so the real id is fine locally.
 
 ## Deploy and first ingest
@@ -70,6 +74,30 @@ export CLOUDFLARE_ACCOUNT_ID=...
 npx wrangler d1 execute stardew-wiki --remote --file schema/wiki.sql
 npm run ingest -- --target remote
 ```
+
+If this database was created before `image_url` existed, add the column once. Chat and suggestions keep working without it; portraits stay hidden until the column is there and a row has a URL.
+
+```bash
+npx wrangler d1 execute stardew-wiki --remote --file schema/migrations/0001_image_url.sql
+```
+
+`npm run ingest` and `npm run backfill:images` also add the column if it is missing, and ignore “duplicate column name” if it is already there. Do not expect the migration file itself to succeed twice.
+
+The current index stores cleaned markdown, not the original HTML or wikitext, so this backfill finds nothing on those rows:
+
+```bash
+npm run backfill:images -- --target remote
+```
+
+That is enough to create the column. `fromStored` will be 0, and the app simply shows citations without thumbnails.
+
+To fill portraits without re-parsing every page, run this from your own computer (GitHub Actions and the Worker are blocked by the wiki):
+
+```bash
+npm run backfill:images -- --target remote --pageimages
+```
+
+It asks `pageimages` first, then the core file list, and builds `/mediawiki/images/{hash}/` URLs. A Cloudflare challenge stops that pass. The next `npm run ingest -- --target remote` from the same computer also fills empty `image_url` values while it checks revisions.
 
 `WIKI_DB_ID` overrides the id in `wrangler.jsonc`. `--skip-vectors` writes D1 only. `--limit 50` caps pages per language. A transient `fetch failed` is retried with backoff (starting at 400ms). If that page still fails, ingest logs it and continues. A Cloudflare challenge still stops the run so it does not hammer the wiki.
 
@@ -108,7 +136,7 @@ The `ChatStore` Durable Object keeps sessions and the tool transcript in SQLite,
 - `src/agent` — tool loop from [`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi), DeepSeek via [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi). No pi-coding-agent file or shell tools.
 - `src/wiki` — `search_wiki`, `get_page`, `map_title` read D1 (trigram full text) and Vectorize. Chinese pages first, English via langlinks. Citations use the original wiki URLs.
 - `src/ingest` — Action API pull, cleaner, D1 upload, embeddings. Not part of the Worker bundle.
-- `src/client` — React PWA: token streaming, a “正在翻阅 wiki…” status while tools run, starter chips, source cards, tables, safe areas, new chat, and a recent-session list.
+- `src/client` — React PWA: token streaming, a “正在翻阅 wiki…” status while tools run, sampled question chips, source cards with portraits, tables, safe areas, new chat, and a recent-session list.
 
 Parsing follows the infobox and table cleanup in [farming-game-mcp](https://github.com/cbhl/farming-game-mcp) and the API notes in [sdv-mcp](https://github.com/vehemont/sdv-mcp): this wiki is MediaWiki 1.35, TextExtracts is not installed, and `rest.php` returns nothing useful, so the Action API plus short keywords is the reliable path.
 
@@ -121,7 +149,8 @@ Works now:
 - Offline index: Chinese and English pages, langlinks, infoboxes, markdown tables
 - Keyword search that handles Chinese, plus vector search when embeddings are loaded
 - Multi-turn Chinese answers, with history stored on the server
-- Citation cards that open the wiki
+- Citation cards that open the wiki, with a portrait when `image_url` is set
+- Welcome questions sampled from real Chinese pages (`/api/random`)
 - `MOCK_LLM=1` for local preview without a key
 - Tests for HTML cleanup, ingest, retrieval, and the agent loop with a mocked model
 

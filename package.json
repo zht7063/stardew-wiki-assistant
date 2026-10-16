@@ -11,6 +11,7 @@
     "dev": "npm run build:client && wrangler dev",
     "dev:worker": "wrangler dev",
     "ingest": "tsx src/ingest/cli.ts",
+    "backfill:images": "tsx src/ingest/backfill-cli.ts",
     "wiki-proxy": "node scripts/wiki-proxy.mjs",
     "build:client": "vite build",
     "build": "npm run build:client && wrangler deploy --dry-run",

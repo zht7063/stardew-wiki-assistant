@@ -36,6 +36,7 @@ describe("ingest parser", () => {
     expect(page.sections).toContain("日程表");
     expect(page.searchText).toContain("Abigail");
     expect(page.searchText).toContain("紫水晶");
+    expect(page.imageUrl).toBe("https://zh.stardewvalleywiki.com/mediawiki/images/8/88/Abigail.png");
   });
 
   it("reads Workers AI embedding payloads", () => {
@@ -67,7 +68,7 @@ describe("ingest pipeline", () => {
     await applySchema(sql);
     const wiki = new MediaWiki(fetchImpl, 0);
     const first = await ingestWiki({ wiki, target: targetFromSql(sql), langs: ["zh"] });
-    expect(first).toEqual({ seen: 1, updated: 1, skipped: 0, failed: 0 });
+    expect(first).toEqual({ seen: 1, updated: 1, skipped: 0, failed: 0, images: 0 });
     const index = new WikiIndex(sql);
     const found = await index.search("阿比盖尔喜欢什么礼物？", "zh");
     expect(found.results[0]?.title).toBe("阿比盖尔");
@@ -76,11 +77,78 @@ describe("ingest pipeline", () => {
     expect(page.markdown).not.toContain("她最喜欢紫水晶");
     expect(page.counterpart?.title).toBe("Abigail");
     expect(page.url).toContain("zh.stardewvalleywiki.com");
+    expect(page.image).toBe("https://zh.stardewvalleywiki.com/mediawiki/images/8/88/Abigail.png");
 
     const second = await ingestWiki({ wiki, target: targetFromSql(sql), langs: ["zh"] });
     expect(second.updated).toBe(0);
     expect(second.skipped).toBe(1);
+    expect(second.images).toBe(0);
     expect(calls.filter((call) => call === "parse")).toHaveLength(1);
+  });
+
+  it("fills a missing portrait from pageimages without parsing the page again", async () => {
+    let pass = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.searchParams.get("list") === "allpages") {
+        return Response.json({ query: { allpages: [{ title: "草莓" }] } });
+      }
+      if (url.searchParams.get("prop")?.includes("langlinks")) {
+        pass += 1;
+        const thumbnail =
+          pass === 1
+            ? undefined
+            : { source: "https://zh.stardewvalleywiki.com/mediawiki/images/thumb/a/ab/Strawberry.png/320px-Strawberry.png" };
+        return Response.json({
+          query: { pages: [{ title: "草莓", lastrevid: 7, thumbnail, langlinks: [] }] },
+        });
+      }
+      return Response.json({
+        parse: {
+          title: "草莓",
+          text: "<table id='infoboxtable'><tr><td id='infoboxsection'>生长季节</td><td id='infoboxdetail'>春季</td></tr></table><p>草莓。</p>",
+        },
+      });
+    };
+    const db = new DatabaseSync(":memory:");
+    const sql = sqliteExecutor(db);
+    await applySchema(sql);
+    const wiki = new MediaWiki(fetchImpl, 0);
+    const first = await ingestWiki({ wiki, target: targetFromSql(sql), langs: ["zh"] });
+    expect(first.updated).toBe(1);
+    expect(first.images).toBe(0);
+    const bare = await new WikiIndex(sql).getPage("草莓", "zh");
+    expect(bare.image).toBeUndefined();
+    const second = await ingestWiki({ wiki, target: targetFromSql(sql), langs: ["zh"] });
+    expect(second.skipped).toBe(1);
+    expect(second.updated).toBe(0);
+    expect(second.images).toBe(1);
+    const filled = await new WikiIndex(sql).getPage("草莓", "zh");
+    expect(filled.image).toBe("https://zh.stardewvalleywiki.com/mediawiki/images/thumb/a/ab/Strawberry.png/320px-Strawberry.png");
+  });
+
+  it("retries describe without pageimages when that module is missing", async () => {
+    const props: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      const prop = url.searchParams.get("prop") ?? "";
+      if (prop) props.push(prop);
+      if (url.searchParams.get("list") === "allpages") {
+        return Response.json({ query: { allpages: [{ title: "草莓" }] } });
+      }
+      if (prop.includes("pageimages")) return Response.json({ error: { code: "badvalue", info: "pageimages" } });
+      if (prop.includes("langlinks")) {
+        return Response.json({ query: { pages: [{ title: "草莓", lastrevid: 3 }] } });
+      }
+      return Response.json({ parse: { title: "草莓", text: "<p>草莓是春季作物，正文够长。</p>" } });
+    };
+    const db = new DatabaseSync(":memory:");
+    const sql = sqliteExecutor(db);
+    await applySchema(sql);
+    const stats = await ingestWiki({ wiki: new MediaWiki(fetchImpl, 0), target: targetFromSql(sql), langs: ["zh"] });
+    expect(stats.updated).toBe(1);
+    expect(props.some((prop) => prop.includes("pageimages"))).toBe(true);
+    expect(props.some((prop) => prop.includes("langlinks") && !prop.includes("pageimages"))).toBe(true);
   });
 
   it("retries a dropped fetch and keeps going when one page still fails", async () => {

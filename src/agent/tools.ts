@@ -54,7 +54,9 @@ export function createWikiTools(wiki: WikiSource): AgentTool[] {
       const page = await wiki.getPage(params.title, params.lang, params.section);
       // Only the page whose text we returned. A langlink is not a second source,
       // and a missing page must not leave a card behind.
-      const pages: Citation[] = page.missing ? [] : [{ title: page.title, url: page.url, lang: page.lang }];
+      const pages: Citation[] = page.missing
+        ? []
+        : [{ title: page.title, url: page.url, lang: page.lang, ...(page.image ? { image: page.image } : {}) }];
       return textResult(formatPage(page), pages);
     },
   };
