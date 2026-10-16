@@ -12,6 +12,7 @@ export const SCHEMA_STATEMENTS = [
   sections_json TEXT NOT NULL DEFAULT '[]',
   search_text TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL DEFAULT '',
+  image_url TEXT,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (lang, title)
 )`,
@@ -25,3 +26,11 @@ export const SCHEMA_STATEMENTS = [
 ];
 
 export const SCHEMA_SQL = `${SCHEMA_STATEMENTS.join(";\n\n")};\n`;
+
+/** Existing databases already have `pages`. CREATE TABLE will not add columns. */
+export const IMAGE_COLUMN_SQL = `ALTER TABLE pages ADD COLUMN image_url TEXT`;
+
+export function isDuplicateColumnError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /duplicate column/i.test(message);
+}

@@ -1,6 +1,6 @@
 import { Agent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { dedupeCitations } from "../shared/citations";
+import { citationFromUnknown, dedupeCitations } from "../shared/citations";
 import type { Citation, ClientEvent } from "../shared/types";
 import { SYSTEM_PROMPT } from "./prompt";
 
@@ -29,13 +29,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function pagesFromDetails(details: unknown): Citation[] {
   if (!isRecord(details) || !Array.isArray(details.pages)) return [];
-  return details.pages.filter((page): page is Citation => {
-    if (!isRecord(page)) return false;
-    return (
-      typeof page.title === "string" &&
-      typeof page.url === "string" &&
-      (page.lang === "zh" || page.lang === "en")
-    );
+  return details.pages.flatMap((page) => {
+    const citation = citationFromUnknown(page);
+    return citation ? [citation] : [];
   });
 }
 

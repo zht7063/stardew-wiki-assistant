@@ -1,3 +1,4 @@
+import { wikiImageUrl } from "../shared/images";
 import type { Citation, WikiLang } from "../shared/types";
 import { pageUrl, type MapPayload, type PagePayload, type SearchHit, type SearchPayload } from "./client";
 import { queryCandidates } from "./parse";
@@ -37,12 +38,13 @@ interface PageRow {
   search_text: string;
   body: string;
   updated_at: number;
+  image_url?: string | null;
 }
 
 const UPSERT_PAGE = `INSERT INTO pages (
   lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-  infobox_json, sections_json, search_text, body, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  infobox_json, sections_json, search_text, body, image_url, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(lang, title) DO UPDATE SET
   url = excluded.url,
   rev_id = excluded.rev_id,
@@ -53,11 +55,11 @@ ON CONFLICT(lang, title) DO UPDATE SET
   sections_json = excluded.sections_json,
   search_text = excluded.search_text,
   body = excluded.body,
+  image_url = COALESCE(excluded.image_url, image_url),
   updated_at = excluded.updated_at`;
 
-const SELECT_PAGE = `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-  infobox_json, sections_json, search_text, body, updated_at
-  FROM pages WHERE lang = ? AND title = ?`;
+const PAGE_COLS =
+  "lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url, infobox_json, sections_json, search_text, body, updated_at";
 
 function pageStatements(page: StoredPage): SqlStatement[] {
   return [
@@ -75,6 +77,7 @@ function pageStatements(page: StoredPage): SqlStatement[] {
         JSON.stringify(page.sections),
         page.searchText,
         page.body,
+        page.imageUrl ?? null,
         Date.now(),
       ],
     },
@@ -158,6 +161,7 @@ function rowToPage(row: PageRow, section?: string, note?: string): PagePayload {
   }
   const capped = capForTool(markdown);
   const lang = asLang(row.lang) ?? "zh";
+  const image = wikiImageUrl(row.image_url) ?? undefined;
   return {
     title: row.title,
     lang,
@@ -167,6 +171,7 @@ function rowToPage(row: PageRow, section?: string, note?: string): PagePayload {
     sections,
     truncated: capped.truncated,
     counterpart: counterpartOf(row),
+    image,
     note,
     missing: false,
   };
@@ -198,10 +203,31 @@ const VECTOR_ONLY_MIN = 0.75;
  * Chinese queries use FTS5 trigrams (3+ characters) and a short-string fallback.
  */
 export class WikiIndex implements WikiSource {
+  private imageColumn: boolean | null = null;
+
   constructor(
     private readonly sql: SqlExecutor,
     private readonly vectors?: (query: string) => Promise<VectorHit[]>,
   ) {}
+
+  private async columns(): Promise<{ list: string; prefixed: string }> {
+    if (this.imageColumn === null) {
+      try {
+        await this.sql.all(`SELECT image_url FROM pages LIMIT 1`, []);
+        this.imageColumn = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/no such column/i.test(message)) this.imageColumn = false;
+        else throw error;
+      }
+    }
+    const list = this.imageColumn ? `${PAGE_COLS}, image_url` : PAGE_COLS;
+    const prefixed = list
+      .split(",")
+      .map((part) => `p.${part.trim()}`)
+      .join(", ");
+    return { list, prefixed };
+  }
 
   async search(query: string, lang: WikiLang): Promise<SearchPayload> {
     try {
@@ -264,12 +290,11 @@ export class WikiIndex implements WikiSource {
 
   async getPage(title: string, lang: WikiLang, section?: string): Promise<PagePayload> {
     const normalized = normalizeTitle(title);
-    const direct = await this.one(SELECT_PAGE, [lang, normalized]);
+    const { list } = await this.columns();
+    const direct = await this.one(`SELECT ${list} FROM pages WHERE lang = ? AND title = ?`, [lang, normalized]);
     if (direct) return rowToPage(direct, section);
     const linked = await this.one(
-      `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-        infobox_json, sections_json, search_text, body, updated_at
-       FROM pages WHERE counterpart_lang = ? AND counterpart_title = ? LIMIT 1`,
+      `SELECT ${list} FROM pages WHERE counterpart_lang = ? AND counterpart_title = ? LIMIT 1`,
       [lang, normalized],
     );
     if (linked) {
@@ -277,9 +302,7 @@ export class WikiIndex implements WikiSource {
       return rowToPage(linked, section, note);
     }
     const sameTitle = await this.one(
-      `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-        infobox_json, sections_json, search_text, body, updated_at
-       FROM pages WHERE lang = ? AND title = ? LIMIT 1`,
+      `SELECT ${list} FROM pages WHERE lang = ? AND title = ? LIMIT 1`,
       [otherLang(lang), normalized],
     );
     if (sameTitle) {
@@ -292,15 +315,14 @@ export class WikiIndex implements WikiSource {
   async mapTitle(title: string, from: WikiLang): Promise<MapPayload> {
     const normalized = normalizeTitle(title);
     const source: Citation = { title: normalized, lang: from, url: pageUrl(from, normalized) };
-    const direct = await this.one(SELECT_PAGE, [from, normalized]);
+    const { list } = await this.columns();
+    const direct = await this.one(`SELECT ${list} FROM pages WHERE lang = ? AND title = ?`, [from, normalized]);
     if (direct) {
       const to = counterpartOf(direct);
       return to ? { from: { title: direct.title, lang: from, url: direct.url }, to } : { from: source, note: "这页没有对应的另一种语言链接。" };
     }
     const inverse = await this.one(
-      `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-        infobox_json, sections_json, search_text, body, updated_at
-       FROM pages WHERE counterpart_lang = ? AND counterpart_title = ? LIMIT 1`,
+      `SELECT ${list} FROM pages WHERE counterpart_lang = ? AND counterpart_title = ? LIMIT 1`,
       [from, normalized],
     );
     if (inverse && asLang(inverse.lang)) {
@@ -313,13 +335,13 @@ export class WikiIndex implements WikiSource {
   }
 
   private async lexical(lang: WikiLang, needles: string[]): Promise<PageRow[]> {
+    const { list, prefixed } = await this.columns();
     const rows: PageRow[] = [];
     for (const needle of needles) {
       if (!needle) continue;
-      const exact = await this.sql.all<PageRow>(SELECT_PAGE, [lang, needle]);
+      const exact = await this.sql.all<PageRow>(`SELECT ${list} FROM pages WHERE lang = ? AND title = ?`, [lang, needle]);
       const titled = await this.sql.all<PageRow>(
-        `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-           infobox_json, sections_json, search_text, body, updated_at
+        `SELECT ${list}
          FROM pages
          WHERE lang = ? AND (
            title = ? OR instr(title, ?) > 0
@@ -333,8 +355,7 @@ export class WikiIndex implements WikiSource {
       if (match) {
         try {
           fts = await this.sql.all<PageRow>(
-            `SELECT p.lang, p.title, p.url, p.rev_id, p.counterpart_lang, p.counterpart_title, p.counterpart_url,
-               p.infobox_json, p.sections_json, p.search_text, p.body, p.updated_at
+            `SELECT ${prefixed}
              FROM pages_fts
              JOIN pages p ON p.title = pages_fts.title AND p.lang = pages_fts.lang
              WHERE pages_fts MATCH ? AND p.lang = ?
@@ -351,8 +372,7 @@ export class WikiIndex implements WikiSource {
       let short: PageRow[] = [];
       if ([...needle].length < 3) {
         short = await this.sql.all<PageRow>(
-          `SELECT lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-             infobox_json, sections_json, search_text, body, updated_at
+          `SELECT ${list}
            FROM pages
            WHERE lang = ? AND (title = ? OR instr(title, ?) > 0 OR instr(infobox_json, ?) > 0)
            LIMIT 8`,
@@ -376,8 +396,9 @@ export class WikiIndex implements WikiSource {
       if (existing) existing.vector = hit.score;
       else missing.push(hit);
     }
+    const { list } = await this.columns();
     for (const hit of missing) {
-      const row = await this.one(SELECT_PAGE, [hit.lang, hit.title]);
+      const row = await this.one(`SELECT ${list} FROM pages WHERE lang = ? AND title = ?`, [hit.lang, hit.title]);
       if (!row) continue;
       byKey.set(`${hit.lang}\0${hit.title}`, { row, vector: hit.score, lexicalRank: 20 });
     }

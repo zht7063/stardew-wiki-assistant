@@ -1,4 +1,6 @@
+import { wikiImageUrl, wikiOrigin } from "../shared/images";
 import type { Citation, WikiLang } from "../shared/types";
+import { extractInfoboxImage } from "./image";
 import type { InfoboxField } from "./parse";
 import { parseWikiHtml } from "./parse";
 
@@ -20,6 +22,8 @@ export interface StoredPage {
   searchText: string;
   body: string;
   truncated: boolean;
+  /** Absolute wiki file URL for the infobox portrait, when we could find one. */
+  imageUrl?: string;
 }
 
 export function toStoredPage(input: {
@@ -29,6 +33,8 @@ export function toStoredPage(input: {
   revId: number;
   html: string;
   counterpart?: Citation;
+  /** pageimages (or another API) result, used when the infobox HTML has no portrait. */
+  imageUrl?: string;
 }): StoredPage {
   const parsed = parseWikiHtml(input.html, { maxChars: BODY_LIMIT });
   const searchText = [
@@ -40,6 +46,7 @@ export function toStoredPage(input: {
     .filter(Boolean)
     .join("\n")
     .slice(0, SEARCH_LIMIT);
+  const imageUrl = extractInfoboxImage(input.html, wikiOrigin(input.lang)) ?? wikiImageUrl(input.imageUrl) ?? undefined;
   return {
     lang: input.lang,
     title: input.title,
@@ -51,6 +58,7 @@ export function toStoredPage(input: {
     searchText,
     body: parsed.markdown,
     truncated: parsed.truncated,
+    imageUrl,
   };
 }
 

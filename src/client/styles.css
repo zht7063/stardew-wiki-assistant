@@ -139,16 +139,52 @@ p { margin: 0; }
 .empty > p { color: var(--ink-soft); line-height: 1.55; max-width: 28rem; }
 .fine { font-size: 0.75rem; color: var(--ink-soft); }
 
-.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.suggest-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 4px;
+}
+.suggest-head span { color: var(--ink-soft); font-size: 0.85rem; min-width: 0; }
+.shuffle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--leaf);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 6px 2px;
+}
+.shuffle svg { width: 16px; height: 16px; }
+.shuffle:disabled { opacity: 0.55; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; min-width: 0; }
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
   border: 0;
   background: var(--card);
   color: var(--leaf-deep);
   border-radius: 999px;
-  padding: 10px 14px;
+  padding: 8px 14px;
   box-shadow: inset 0 0 0 1px var(--line), var(--shadow);
   text-align: left;
   line-height: 1.35;
+}
+.chip span { min-width: 0; overflow-wrap: anywhere; }
+.chip-img {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--moss);
 }
 .chip:active { transform: translateY(1px); }
 
@@ -222,21 +258,88 @@ p { margin: 0; }
   padding-bottom: 2px;
 }
 .cite {
-  flex: 0 0 72%;
-  max-width: 240px;
+  flex: 0 0 auto;
+  width: min(240px, 100%);
+  max-width: 100%;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   text-decoration: none;
   color: var(--ink);
   background: #fff;
   border-radius: 14px;
-  padding: 10px 12px;
+  padding: 8px;
   box-shadow: inset 0 0 0 1px var(--line);
 }
+.thumb {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--moss);
+}
+.thumb img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+}
+.cite-link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-decoration: none;
+  color: inherit;
+}
 .cite span { color: var(--leaf); font-size: 0.72rem; font-weight: 700; }
-.cite strong { font-size: 0.95rem; overflow-wrap: anywhere; }
-.cite em { font-style: normal; color: var(--ink-soft); font-size: 0.72rem; overflow-wrap: anywhere; }
+.cite strong {
+  font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cite em {
+  font-style: normal;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(60, 42, 34, 0.72);
+}
+.lightbox-hit {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  max-width: 100%;
+  max-height: 100%;
+}
+.lightbox img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(420px, calc(100vw - 48px));
+  max-height: min(70vh, 520px);
+  object-fit: contain;
+  border-radius: 16px;
+  background: #fffaf3;
+  box-shadow: var(--shadow);
+}
 
 .error {
   margin: 0 16px 8px;

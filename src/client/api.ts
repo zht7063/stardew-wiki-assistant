@@ -1,3 +1,4 @@
+import { wikiImageUrl } from "../shared/images";
 import type { ClientEvent, SessionSummary, VisibleMessage } from "../shared/types";
 
 const PASS_KEY = "stardew-pass";
@@ -21,7 +22,7 @@ export function storeSessionId(id: string): void {
   else localStorage.removeItem(SESSION_KEY);
 }
 
-function headers(json = false): Headers {
+export function authHeaders(json = false): Headers {
   const result = new Headers();
   if (json) result.set("Content-Type", "application/json");
   const password = savedPassword();
@@ -43,13 +44,13 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
-  const response = await fetch("/api/sessions", { headers: headers() });
+  const response = await fetch("/api/sessions", { headers: authHeaders() });
   const data = await readJson<{ sessions: SessionSummary[] }>(response);
   return data.sessions;
 }
 
 export async function loadSession(id: string): Promise<VisibleMessage[]> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { headers: headers() });
+  const response = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { headers: authHeaders() });
   const data = await readJson<{ messages: VisibleMessage[] }>(response);
   return data.messages;
 }
@@ -57,9 +58,29 @@ export async function loadSession(id: string): Promise<VisibleMessage[]> {
 export async function deleteSession(id: string): Promise<void> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
     method: "DELETE",
-    headers: headers(),
+    headers: authHeaders(),
   });
   await readJson(response);
+}
+
+export interface SuggestionChip {
+  title: string;
+  question: string;
+  image?: string;
+}
+
+export async function fetchSuggestions(n = 4): Promise<SuggestionChip[]> {
+  const response = await fetch(`/api/random?n=${n}`, { headers: authHeaders() });
+  const data = await readJson<{ suggestions?: SuggestionChip[] }>(response);
+  const rows = Array.isArray(data.suggestions) ? data.suggestions : [];
+  return rows.flatMap((row) => {
+    if (!row || typeof row.question !== "string" || typeof row.title !== "string") return [];
+    const question = row.question.trim();
+    const title = row.title.trim();
+    if (!question || !title) return [];
+    const image = wikiImageUrl(row.image);
+    return [{ title, question, ...(image ? { image } : {}) }];
+  });
 }
 
 export async function streamChat(
@@ -70,7 +91,7 @@ export async function streamChat(
 ): Promise<void> {
   const response = await fetch("/api/chat", {
     method: "POST",
-    headers: headers(true),
+    headers: authHeaders(true),
     body: JSON.stringify({ sessionId: sessionId || undefined, message }),
     signal,
   });

@@ -4,14 +4,17 @@ import type { Citation, SessionSummary, VisibleMessage } from "../shared/types";
 import {
   UnauthorizedError,
   deleteSession,
+  fetchSuggestions,
   listSessions,
   loadSession,
   savedSessionId,
   storePassword,
   storeSessionId,
   streamChat,
+  type SuggestionChip,
 } from "./api";
 import { Markdown } from "./markdown";
+import { ChipImage, Lightbox, WikiThumb } from "./media";
 
 const STARTERS = [
   "阿比盖尔喜欢什么礼物？",
@@ -61,10 +64,14 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [drawer, setDrawer] = useState(false);
+  const [suggestions, setSuggestions] = useState<SuggestionChip[] | null>(null);
+  const [shuffling, setShuffling] = useState(false);
+  const [zoom, setZoom] = useState<{ src: string; label: string } | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const stickRef = useRef(true);
+  const suggestGen = useRef(0);
 
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -96,11 +103,32 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (locked) return;
+    void loadSuggestions();
+  }, [locked]);
+
+  useEffect(() => {
     if (!stickRef.current) return;
     const node = threadRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
   }, [messages, status, busy]);
+
+  async function loadSuggestions() {
+    const generation = suggestGen.current + 1;
+    suggestGen.current = generation;
+    setShuffling(true);
+    try {
+      const next = await fetchSuggestions(4);
+      if (generation === suggestGen.current) setSuggestions(next);
+    } catch (reason) {
+      if (generation !== suggestGen.current) return;
+      if (reason instanceof UnauthorizedError) setLocked(true);
+      else setSuggestions((current) => current ?? []);
+    } finally {
+      if (generation === suggestGen.current) setShuffling(false);
+    }
+  }
 
   async function refreshSessions(activeId = sessionId) {
     const next = await listSessions();
@@ -250,6 +278,12 @@ export function App() {
   }
 
   const empty = messages.length === 0;
+  const prompts: SuggestionChip[] =
+    suggestions && suggestions.length > 0
+      ? suggestions
+      : suggestions === null
+        ? []
+        : STARTERS.map((question) => ({ title: question, question }));
   const showStatus = Boolean(status) && (busy || messages.some((message) => message.pending));
   const title = useMemo(() => {
     const current = sessions.find((session) => session.id === sessionId);
@@ -304,10 +338,29 @@ export function App() {
             </div>
             <h2>今天想问点什么？</h2>
             <p>礼物、鱼、作物、村民的日程，我先去 wiki 上核对，再告诉你。</p>
+            <div className="suggest-head">
+              <span>{suggestions === null ? "正在挑几个问题…" : "可以先问这些"}</span>
+              <button
+                type="button"
+                className="shuffle"
+                aria-label="换一批问题"
+                disabled={shuffling}
+                onClick={() => void loadSuggestions()}
+              >
+                <ShuffleIcon />
+                {shuffling ? "换一批…" : "换一批"}
+              </button>
+            </div>
             <div className="chips">
-              {STARTERS.map((question) => (
-                <button key={question} type="button" className="chip" onClick={() => send(question)}>
-                  {question}
+              {prompts.map((suggestion) => (
+                <button
+                  key={suggestion.question}
+                  type="button"
+                  className="chip"
+                  onClick={() => void send(suggestion.question)}
+                >
+                  {suggestion.image ? <ChipImage src={suggestion.image} /> : null}
+                  <span>{suggestion.question}</span>
                 </button>
               ))}
             </div>
@@ -332,11 +385,20 @@ export function App() {
                 {message.citations.length > 0 ? (
                   <div className="citations">
                     {message.citations.map((page) => (
-                      <a key={page.url} className="cite" href={page.url} target="_blank" rel="noopener noreferrer">
-                        <span>{page.lang === "zh" ? "中文 wiki" : "英文 wiki"}</span>
-                        <strong>{page.title}</strong>
-                        <em>{page.lang === "zh" ? "zh.stardewvalleywiki.com" : "stardewvalleywiki.com"}</em>
-                      </a>
+                      <div key={page.url} className="cite">
+                        {page.image ? (
+                          <WikiThumb
+                            src={page.image}
+                            label={page.title}
+                            onOpen={(src) => setZoom({ src, label: page.title })}
+                          />
+                        ) : null}
+                        <a className="cite-link" href={page.url} target="_blank" rel="noopener noreferrer">
+                          <span>{page.lang === "zh" ? "中文 wiki" : "英文 wiki"}</span>
+                          <strong>{page.title}</strong>
+                          <em>{page.lang === "zh" ? "zh.stardewvalleywiki.com" : "stardewvalleywiki.com"}</em>
+                        </a>
+                      </div>
                     ))}
                   </div>
                 ) : null}
@@ -385,6 +447,8 @@ export function App() {
           </button>
         )}
       </form>
+
+      {zoom ? <Lightbox src={zoom.src} label={zoom.label} onClose={() => setZoom(null)} /> : null}
 
       {drawer ? (
         <div className="drawer-root">
@@ -437,6 +501,15 @@ function ComposeIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ShuffleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 12a8 8 0 1 1-2.3-5.6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M20 4.5V9h-4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

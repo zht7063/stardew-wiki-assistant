@@ -1,5 +1,6 @@
 import type { Citation, WikiLang } from "../shared/types";
 import { USER_AGENT, pageUrl } from "../wiki/client";
+import { imageFromApiPage } from "../wiki/image";
 
 const API: Record<WikiLang, string> = {
   zh: "https://zh.stardewvalleywiki.com/mediawiki/api.php",
@@ -19,6 +20,8 @@ export interface PageMeta {
   title: string;
   revId: number;
   counterpart?: Citation;
+  /** Portrait from pageimages, when that module is installed. */
+  imageUrl?: string;
 }
 
 export type WikiFetch = (
@@ -83,14 +86,25 @@ export class MediaWiki {
   async describe(lang: WikiLang, titles: string[]): Promise<PageMeta[]> {
     if (titles.length === 0) return [];
     const other = lang === "zh" ? "en" : "zh";
-    const data = await this.api(lang, {
+    const base = {
       action: "query",
-      prop: "info|langlinks",
       titles: titles.join("|"),
       lllang: other,
       lllimit: "1",
       redirects: "0",
+    };
+    // pageimages is optional on this wiki. If the module is missing, the query
+    // comes back without pages and we retry the call the ingest already depends on.
+    let data = await this.api(lang, {
+      ...base,
+      prop: "info|langlinks|pageimages",
+      piprop: "thumbnail|original|name",
+      pithumbsize: "320",
+      pilicense: "any",
     });
+    if (!Array.isArray(data?.query?.pages)) {
+      data = await this.api(lang, { ...base, prop: "info|langlinks" });
+    }
     const pages = data?.query?.pages;
     if (!Array.isArray(pages)) return [];
     const metas: PageMeta[] = [];
@@ -102,13 +116,39 @@ export class MediaWiki {
         const linkLang = link.lang === "zh" || link.lang === "en" ? link.lang : other;
         counterpart = { lang: linkLang, title: link.title, url: pageUrl(linkLang, link.title) };
       }
+      const imageUrl = imageFromApiPage(page) ?? undefined;
       metas.push({
         title: page.title,
         revId: typeof page.lastrevid === "number" ? page.lastrevid : 0,
         counterpart,
+        imageUrl,
       });
     }
     return metas;
+  }
+
+  /**
+   * Core `prop=images` list. Used by the image backfill when pageimages is
+   * absent and we do not want to re-download rendered HTML.
+   */
+  async listImages(lang: WikiLang, titles: string[]): Promise<Map<string, string[]>> {
+    if (titles.length === 0) return new Map();
+    const data = await this.api(lang, {
+      action: "query",
+      prop: "images",
+      titles: titles.join("|"),
+      imlimit: "20",
+      redirects: "0",
+    });
+    const pages = data?.query?.pages;
+    const out = new Map<string, string[]>();
+    if (!Array.isArray(pages)) return out;
+    for (const page of pages) {
+      if (!page || typeof page.title !== "string" || !Array.isArray(page.images)) continue;
+      const files = page.images.flatMap((image: { title?: unknown }) => (typeof image?.title === "string" ? [image.title] : []));
+      out.set(page.title, files);
+    }
+    return out;
   }
 
   async render(lang: WikiLang, title: string): Promise<{ title: string; html: string } | null> {

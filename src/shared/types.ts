@@ -4,6 +4,8 @@ export interface Citation {
   title: string;
   url: string;
   lang: WikiLang;
+  /** Infobox portrait on the wiki. Absent when that page has no image yet. */
+  image?: string;
 }
 
 export interface VisibleMessage {

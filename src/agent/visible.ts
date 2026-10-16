@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { dedupeCitations } from "../shared/citations";
+import { citationFromUnknown, dedupeCitations } from "../shared/citations";
 import type { Citation } from "../shared/types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -9,10 +9,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function pagesFromDetails(details: unknown): Citation[] {
   if (!isRecord(details) || !Array.isArray(details.pages)) return [];
   return details.pages.flatMap((page) => {
-    if (!isRecord(page)) return [];
-    if (typeof page.title !== "string" || typeof page.url !== "string") return [];
-    if (page.lang !== "zh" && page.lang !== "en") return [];
-    return [{ title: page.title, url: page.url, lang: page.lang }];
+    const citation = citationFromUnknown(page);
+    return citation ? [citation] : [];
   });
 }
 
