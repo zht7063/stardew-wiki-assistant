@@ -80,6 +80,11 @@ function asText(value: unknown): string {
   return "";
 }
 
+/**
+ * Live Action API client. Tests still use it. The Worker does not: those wiki
+ * hosts answer Cloudflare Worker fetches with a challenge page. Ingest runs
+ * from a normal machine and the Worker reads D1.
+ */
 export class WikiClient {
   private readonly fetchImpl: typeof fetch;
   private readonly cache?: WikiCache;

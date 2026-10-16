@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { Citation } from "../shared/types";
-import { WikiClient } from "../wiki/client";
+import type { WikiSource } from "../wiki/source";
 import { formatMap, formatPage, formatSearch } from "../wiki/format";
 
 const Lang = Type.Union([Type.Literal("zh"), Type.Literal("en")]);
@@ -29,7 +29,7 @@ function textResult(text: string, pages: Citation[]) {
   };
 }
 
-export function createWikiTools(wiki: WikiClient): AgentTool[] {
+export function createWikiTools(wiki: WikiSource): AgentTool[] {
   const searchWiki: AgentTool<typeof searchParameters> = {
     name: "search_wiki",
     label: "搜索 wiki",

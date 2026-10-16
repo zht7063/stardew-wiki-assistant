@@ -5,14 +5,9 @@
 # Create one at https://platform.deepseek.com/
 DEEPSEEK_API_KEY=
 
-# Set to 1 to preview the app without a key. Wiki lookups stay live;
-# the narrator that decides tool calls and wording is scripted.
+# Set to 1 to preview the app without a key. Answers come from the offline
+# index; the narrator that picks tools and wording is scripted.
 MOCK_LLM=
-
-# Local wrangler fetch is HTTP/1.1, which the wiki's Cloudflare check
-# challenges. `npm run dev` starts scripts/wiki-proxy.mjs on this port.
-# Leave unset in production: deployed Workers negotiate HTTP/2 themselves.
-WIKI_PROXY=http://127.0.0.1:8791
 
 # Optional shared passphrase. When set, the phone must unlock before
 # /api/chat will spend the DeepSeek key. Leave empty for local use.
