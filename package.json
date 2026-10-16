@@ -8,14 +8,15 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "dev": "npm run build:client && node scripts/dev.mjs",
-    "dev:worker": "node scripts/dev.mjs",
+    "dev": "npm run build:client && wrangler dev",
+    "dev:worker": "wrangler dev",
+    "ingest": "tsx src/ingest/cli.ts",
     "wiki-proxy": "node scripts/wiki-proxy.mjs",
     "build:client": "vite build",
     "build": "npm run build:client && wrangler deploy --dry-run",
     "deploy": "npm run build:client && wrangler deploy",
     "test": "vitest run",
-    "typecheck": "wrangler types && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "typecheck": "wrangler types && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.ingest.json --noEmit",
     "types": "wrangler types"
   },
   "repository": {
@@ -42,6 +43,7 @@
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.0.4",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "undici": "^7.30.1",
     "vite": "^7.1.10",

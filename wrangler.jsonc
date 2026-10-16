@@ -11,6 +11,9 @@
       "enabled": true
     }
   },
+  "routes": [
+    { "pattern": "stardewiki.tianyubai.cn", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
@@ -23,9 +26,25 @@
   "kv_namespaces": [
     {
       "binding": "WIKI_CACHE",
-      "id": "0123456789abcdef0123456789abcdef"
+      "id": "11d435912c9b4141be03abdd278f57cc"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "WIKI_DB",
+      "database_name": "stardew-wiki",
+      "database_id": "242ec9c4-3485-47a0-a56f-3de8fbe9528d"
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "WIKI_VECTORS",
+      "index_name": "stardew-wiki"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
   "durable_objects": {
     "bindings": [
       {

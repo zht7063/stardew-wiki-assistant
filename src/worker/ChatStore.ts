@@ -6,7 +6,9 @@ import { runChatTurn } from "../agent/run";
 import { createWikiTools } from "../agent/tools";
 import { visibleFromTranscript } from "../agent/visible";
 import type { Citation, ClientEvent, SessionSummary, VisibleMessage } from "../shared/types";
-import { WikiClient, type WikiCache } from "../wiki/client";
+import { d1Executor } from "./d1-exec";
+import { WikiIndex } from "../wiki/index-store";
+import { vectorHitsFromBindings, withTimeout } from "../wiki/vectors";
 import { createModels } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 
@@ -18,23 +20,6 @@ const SSE_HEADERS = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function kvCache(namespace: KVNamespace): WikiCache {
-  return {
-    get: (key) => namespace.get(key),
-    put: (key, value, ttlSeconds) => namespace.put(key, value, { expirationTtl: ttlSeconds }),
-  };
-}
-
-function wikiTransport(proxy: string | undefined): typeof fetch {
-  if (!proxy) return (input, init) => globalThis.fetch(input, init);
-  return (input, init) => {
-    const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const endpoint = new URL(proxy);
-    endpoint.searchParams.set("url", href);
-    return globalThis.fetch(endpoint, init);
-  };
 }
 
 export class ChatStore extends DurableObject<Env> {
@@ -169,7 +154,22 @@ export class ChatStore extends DurableObject<Env> {
         };
         try {
           send({ type: "session", sessionId });
-          const wiki = new WikiClient(wikiTransport(this.env.WIKI_PROXY), kvCache(this.env.WIKI_CACHE));
+          const wiki = new WikiIndex(d1Executor(this.env.WIKI_DB), (query) =>
+            withTimeout(
+              vectorHitsFromBindings(
+                {
+                  AI: {
+                    run: (model, input) => this.env.AI.run(model, input),
+                  },
+                  WIKI_VECTORS: {
+                    query: (vector, options) => this.env.WIKI_VECTORS.query(vector, options),
+                  },
+                },
+                query,
+              ),
+              2500,
+            ).then((hits) => hits ?? []),
+          );
           const models = createModels();
           models.setProvider(deepseekProvider());
           const result = await runChatTurn({
@@ -184,7 +184,6 @@ export class ChatStore extends DurableObject<Env> {
           });
           if (abort.signal.aborted) return;
           this.persist(sessionId, message, result.transcript);
-          send({ type: "citations", pages: result.citations });
           send({ type: "done", sessionId });
         } catch (error) {
           if (abort.signal.aborted) return;

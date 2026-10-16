@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { ToolCall } from "@earendil-works/pi-ai";
 import { createMockStreamFn } from "../src/agent/mock-llm";
 import { stubModel } from "../src/agent/model";
 import { runChatTurn } from "../src/agent/run";
+import { emptyUsage, streamAssistantMessage } from "../src/agent/stream";
 import { createWikiTools } from "../src/agent/tools";
 import { visibleFromTranscript } from "../src/agent/visible";
 import type { ClientEvent } from "../src/shared/types";
@@ -54,7 +57,14 @@ describe("agent loop", () => {
     expect(result.assistantText).toContain("紫水晶");
     expect(result.assistantText).toContain("https://zh.stardewvalleywiki.com/");
     expect(result.assistantText).toContain("CC BY-NC-SA");
-    expect(result.citations.some((page) => page.title === "阿比盖尔" && page.lang === "zh")).toBe(true);
+    expect(result.citations).toEqual([
+      expect.objectContaining({ title: "阿比盖尔", lang: "zh" }),
+    ]);
+    const citationEvents = events.filter(
+      (event): event is Extract<ClientEvent, { type: "citations" }> => event.type === "citations",
+    );
+    expect(citationEvents).toHaveLength(1);
+    expect(citationEvents[0]?.pages.map((page) => page.title)).toEqual(["阿比盖尔"]);
     expect(events.some((event) => event.type === "status" && event.text?.includes("正在翻阅"))).toBe(true);
     expect(events.filter((event) => event.type === "token").map((event) => event.text).join("")).toContain("紫水晶");
 
@@ -83,4 +93,47 @@ describe("agent loop", () => {
     expect(second.assistantText).toContain("鹈鹕镇");
     expect(second.assistantText).toContain("居住于");
   });
+
+  it("emits each source once when a later tool does not open a new page", async () => {
+    const events: ClientEvent[] = [];
+    const streamFn: StreamFn = (model, context) => {
+      const tools = context.messages.filter((message) => message.role === "toolResult");
+      const opened = tools.some((message) => message.toolName === "get_page");
+      const mapped = tools.some((message) => message.toolName === "map_title");
+      const call = (name: string, args: Record<string, unknown>): ToolCall => ({
+        type: "toolCall",
+        id: `t_${name}_${tools.length}`,
+        name,
+        arguments: args,
+      });
+      let content: AssistantMessageContent;
+      if (!opened) content = [call("get_page", { title: "阿比盖尔", lang: "zh" })];
+      else if (!mapped) content = [call("map_title", { title: "阿比盖尔", from: "zh" })];
+      else content = [{ type: "text", text: "阿比盖尔喜欢紫水晶。" }];
+      return streamAssistantMessage({
+        role: "assistant",
+        content,
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: emptyUsage(),
+        stopReason: content[0]?.type === "text" ? "stop" : "toolUse",
+        timestamp: Date.now(),
+      });
+    };
+    const result = await runChatTurn({
+      history: [],
+      userText: "阿比盖尔喜欢什么礼物？",
+      model: stubModel(),
+      streamFn,
+      tools: createWikiTools(wiki()),
+      onEvent: (event) => events.push(event),
+    });
+    const citationEvents = events.filter((event) => event.type === "citations");
+    expect(citationEvents).toHaveLength(1);
+    expect(result.citations.map((page) => page.title)).toEqual(["阿比盖尔"]);
+    expect(result.citations.some((page) => page.lang === "en")).toBe(false);
+  });
 });
+
+type AssistantMessageContent = Extract<AgentMessage, { role: "assistant" }>["content"];

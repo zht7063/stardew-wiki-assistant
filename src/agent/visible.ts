@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { dedupeCitations } from "../shared/citations";
 import type { Citation } from "../shared/types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -15,17 +16,6 @@ export function pagesFromDetails(details: unknown): Citation[] {
   });
 }
 
-function dedupe(pages: Citation[]): Citation[] {
-  const seen = new Set<string>();
-  const out: Citation[] = [];
-  for (const page of pages) {
-    if (seen.has(page.url)) continue;
-    seen.add(page.url);
-    out.push(page);
-  }
-  return out;
-}
-
 export function visibleFromTranscript(
   transcript: AgentMessage[],
 ): Array<{ role: "user" | "assistant"; content: string; citations: Citation[] }> {
@@ -33,7 +23,7 @@ export function visibleFromTranscript(
   let pending: Citation[] = [];
   for (const message of transcript) {
     if (message.role === "toolResult") {
-      pending = dedupe([...pending, ...pagesFromDetails(message.details)]);
+      pending = dedupeCitations([...pending, ...pagesFromDetails(message.details)]);
       continue;
     }
     if (message.role === "user") {
@@ -55,7 +45,7 @@ export function visibleFromTranscript(
         .trim();
       const hasTools = message.content.some((block) => block.type === "toolCall");
       if (!content) continue;
-      visible.push({ role: "assistant", content, citations: hasTools ? [] : dedupe(pending) });
+      visible.push({ role: "assistant", content, citations: hasTools ? [] : dedupeCitations(pending) });
       if (!hasTools) pending = [];
     }
   }

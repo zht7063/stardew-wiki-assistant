@@ -1,0 +1,39 @@
+name: ingest-wiki
+
+on:
+  schedule:
+    # Sunday 18:00 UTC. Re-embeds only pages whose revision changed.
+    - cron: "0 18 * * 0"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max pages per language (empty means all)"
+        required: false
+        type: string
+      skip_vectors:
+        description: "Skip Workers AI embeddings"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Ingest wiki into D1 and Vectorize
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WIKI_DB_ID: ${{ secrets.WIKI_DB_ID }}
+        run: |
+          args=(--target remote --langs zh,en)
+          if [ -n "${{ inputs.limit }}" ]; then args+=(--limit "${{ inputs.limit }}"); fi
+          if [ "${{ inputs.skip_vectors }}" = "true" ]; then args+=(--skip-vectors); fi
+          npm run ingest -- "${args[@]}"

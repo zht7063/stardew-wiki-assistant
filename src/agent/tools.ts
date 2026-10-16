@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { Citation } from "../shared/types";
-import { WikiClient } from "../wiki/client";
+import type { WikiSource } from "../wiki/source";
 import { formatMap, formatPage, formatSearch } from "../wiki/format";
 
 const Lang = Type.Union([Type.Literal("zh"), Type.Literal("en")]);
@@ -29,7 +29,7 @@ function textResult(text: string, pages: Citation[]) {
   };
 }
 
-export function createWikiTools(wiki: WikiClient): AgentTool[] {
+export function createWikiTools(wiki: WikiSource): AgentTool[] {
   const searchWiki: AgentTool<typeof searchParameters> = {
     name: "search_wiki",
     label: "搜索 wiki",
@@ -52,9 +52,10 @@ export function createWikiTools(wiki: WikiClient): AgentTool[] {
     parameters: pageParameters,
     execute: async (_toolCallId, params) => {
       const page = await wiki.getPage(params.title, params.lang, params.section);
-      const pages: Citation[] = [{ title: page.title, url: page.url, lang: page.lang }];
-      if (page.counterpart) pages.push(page.counterpart);
-      return textResult(formatPage(page), page.missing ? [] : pages);
+      // Only the page whose text we returned. A langlink is not a second source,
+      // and a missing page must not leave a card behind.
+      const pages: Citation[] = page.missing ? [] : [{ title: page.title, url: page.url, lang: page.lang }];
+      return textResult(formatPage(page), pages);
     },
   };
 
@@ -66,8 +67,8 @@ export function createWikiTools(wiki: WikiClient): AgentTool[] {
     parameters: mapParameters,
     execute: async (_toolCallId, params) => {
       const mapped = await wiki.mapTitle(params.title, params.from);
-      const pages = [mapped.from, mapped.to].filter((page): page is Citation => Boolean(page));
-      return textResult(formatMap(mapped), pages);
+      // Title mapping is not a source. The card appears when get_page reads that page.
+      return textResult(formatMap(mapped), []);
     },
   };
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { dedupeCitations } from "../shared/citations";
 import type { Citation, SessionSummary, VisibleMessage } from "../shared/types";
 import {
   UnauthorizedError,
@@ -34,14 +35,7 @@ function relativeTime(timestamp: number): string {
 }
 
 function mergeCitations(current: Citation[], incoming: Citation[]): Citation[] {
-  const seen = new Set(current.map((page) => page.url));
-  const next = current.slice();
-  for (const page of incoming) {
-    if (seen.has(page.url)) continue;
-    seen.add(page.url);
-    next.push(page);
-  }
-  return next;
+  return dedupeCitations([...current, ...incoming]);
 }
 
 function Mark({ className = "mark" }: { className?: string }) {
@@ -79,12 +73,17 @@ export function App() {
       const overlap = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
       document.documentElement.style.setProperty("--kb", `${overlap}px`);
     };
+    const pin = () => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+    };
     viewport.addEventListener("resize", sync);
     viewport.addEventListener("scroll", sync);
+    window.addEventListener("scroll", pin);
     sync();
     return () => {
       viewport.removeEventListener("resize", sync);
       viewport.removeEventListener("scroll", sync);
+      window.removeEventListener("scroll", pin);
     };
   }, []);
 
@@ -287,7 +286,7 @@ export function App() {
         </button>
         <div className="brand">
           <Mark />
-          <div>
+          <div className="brand-text">
             <h1>{empty ? "星露问答" : title}</h1>
             <p>翻一翻 wiki 再回答</p>
           </div>
