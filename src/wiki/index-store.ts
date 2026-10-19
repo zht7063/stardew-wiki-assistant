@@ -43,8 +43,8 @@ interface PageRow {
 
 const UPSERT_PAGE = `INSERT INTO pages (
   lang, title, url, rev_id, counterpart_lang, counterpart_title, counterpart_url,
-  infobox_json, sections_json, search_text, body, image_url, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  infobox_json, sections_json, search_text, body, image_url, content_hash, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(lang, title) DO UPDATE SET
   url = excluded.url,
   rev_id = excluded.rev_id,
@@ -56,6 +56,7 @@ ON CONFLICT(lang, title) DO UPDATE SET
   search_text = excluded.search_text,
   body = excluded.body,
   image_url = COALESCE(excluded.image_url, image_url),
+  content_hash = excluded.content_hash,
   updated_at = excluded.updated_at`;
 
 const PAGE_COLS =
@@ -78,16 +79,21 @@ function pageStatements(page: StoredPage): SqlStatement[] {
         page.searchText,
         page.body,
         page.imageUrl ?? null,
+        page.contentHash ?? null,
         Date.now(),
       ],
     },
+    // pages_fts.rowid = pages.rowid (an upsert keeps the rowid). Both statements are
+    // rowid / primary-key lookups, so a page costs a few reads instead of a scan of
+    // the whole FTS table. Requires migration 0002 on databases created before it.
     {
-      sql: `DELETE FROM pages_fts WHERE title = ? AND lang = ?`,
-      params: [page.title, page.lang],
+      sql: `DELETE FROM pages_fts WHERE rowid = (SELECT rowid FROM pages WHERE lang = ? AND title = ?)`,
+      params: [page.lang, page.title],
     },
     {
-      sql: `INSERT INTO pages_fts (title, search_text, lang) VALUES (?, ?, ?)`,
-      params: [page.title, page.searchText, page.lang],
+      sql: `INSERT INTO pages_fts (rowid, title, search_text, lang)
+SELECT rowid, title, search_text, lang FROM pages WHERE lang = ? AND title = ?`,
+      params: [page.lang, page.title],
     },
   ];
 }

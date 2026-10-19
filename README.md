@@ -83,6 +83,14 @@ npx wrangler d1 execute stardew-wiki --remote --file schema/migrations/0001_imag
 
 `npm run ingest` and `npm run backfill:images` also add the column if it is missing, and ignore “duplicate column name” if it is already there. Do not expect the migration file itself to succeed twice.
 
+If this database was created before migration 0002, apply it once before the next remote ingest. It rebuilds `pages_fts` so each FTS row's rowid is the `pages` rowid, and adds `pages.content_hash`. Ingest then deletes and inserts FTS rows by rowid (a few reads per page) instead of `DELETE … WHERE title = ? AND lang = ?`, which scanned the whole FTS table for every page, and skips the write when a new revision renders to the same content. A remote ingest refuses to run until this migration is in place; a local `.data/wiki.sqlite` is migrated automatically.
+
+```bash
+npx wrangler d1 execute stardew-wiki --remote --file schema/migrations/0002_fts_rowid_content_hash.sql
+```
+
+The migration reads each `pages` row once (about 4k reads for en+zh). Keyword search returns nothing for the moment between the DROP and the end of the INSERT. Re-running it rebuilds FTS again and then stops at “duplicate column name”, which is safe.
+
 The current index stores cleaned markdown, not the original HTML or wikitext, so this backfill finds nothing on those rows:
 
 ```bash

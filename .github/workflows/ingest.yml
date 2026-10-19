@@ -1,9 +1,7 @@
 name: ingest-wiki
 
 on:
-  schedule:
-    # Sunday 18:00 UTC. Re-embeds only pages whose revision changed.
-    - cron: "0 18 * * 0"
+  # Manual only. Re-embeds only pages whose revision and content changed.
   workflow_dispatch:
     inputs:
       limit:

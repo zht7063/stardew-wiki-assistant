@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS pages (
   search_text TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL DEFAULT '',
   image_url TEXT,
+  content_hash TEXT,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (lang, title)
 );
