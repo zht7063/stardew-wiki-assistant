@@ -3,7 +3,7 @@ import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } fr
 import type { WikiLang } from "../shared/types";
 import { openLocalDb, sqliteExecutor } from "./local-db";
 import { MediaWiki } from "./mediawiki";
-import { applySchema, ingestWiki, targetFromSql } from "./pipeline";
+import { applySchema, ensureFtsRowidSchema, ingestWiki, targetFromSql, type IngestTarget } from "./pipeline";
 import { embedRemote, httpD1Executor, upsertRemoteVectors, type CloudflareAuth } from "./remote";
 
 const PLACEHOLDER_DB = "00000000-0000-0000-0000-000000000000";
@@ -47,7 +47,6 @@ async function main(): Promise<void> {
   };
   const wiki = new MediaWiki(fetchImpl, pauseMs, { concurrency });
 
-  let target = targetFromSql(sqliteExecutor(openLocalDb(arg("--out") ?? ".data/wiki.sqlite")));
   if (targetName === "remote") {
     const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
     const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
@@ -66,8 +65,9 @@ async function main(): Promise<void> {
     }
     const sql = httpD1Executor(auth);
     await applySchema(sql);
+    await ensureFtsRowidSchema(sql, "require");
     const base = targetFromSql(sql);
-    target = {
+    const target: IngestTarget = {
       ...base,
       putVectors: skipVectors ? undefined : (items) => upsertRemoteVectors(auth, items),
     };
@@ -84,6 +84,10 @@ async function main(): Promise<void> {
     return;
   }
   if (targetName !== "local") throw new Error("--target must be local or remote");
+  const localSql = sqliteExecutor(openLocalDb(arg("--out") ?? ".data/wiki.sqlite"));
+  // A local database from before migration 0002 is rebuilt in place.
+  await ensureFtsRowidSchema(localSql, "migrate");
+  const target = targetFromSql(localSql);
   const stats = await ingestWiki({
     wiki,
     target,

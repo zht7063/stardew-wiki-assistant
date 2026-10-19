@@ -24,6 +24,8 @@ export interface StoredPage {
   truncated: boolean;
   /** Absolute wiki file URL for the infobox portrait, when we could find one. */
   imageUrl?: string;
+  /** Hash of the stored fields. Ingest skips the D1 write when it matches pages.content_hash. */
+  contentHash?: string;
 }
 
 export function toStoredPage(input: {

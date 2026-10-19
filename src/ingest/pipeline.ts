@@ -4,7 +4,14 @@ import type { SqlExecutor } from "../wiki/index-store";
 import { upsertStoredPage, upsertStoredPages } from "../wiki/index-store";
 import { pageUrl } from "../wiki/client";
 import { toStoredPage, vectorText, type StoredPage } from "../wiki/record";
-import { IMAGE_COLUMN_SQL, SCHEMA_STATEMENTS, isDuplicateColumnError } from "../wiki/schema";
+import {
+  FTS_ROWID_MIGRATION_FILE,
+  FTS_ROWID_MIGRATION_STATEMENTS,
+  IMAGE_COLUMN_SQL,
+  SCHEMA_STATEMENTS,
+  isDuplicateColumnError,
+  isMissingColumnError,
+} from "../wiki/schema";
 import { MediaWiki, WikiBlockedError, type PageMeta } from "./mediawiki";
 
 export interface VectorWrite {
@@ -13,9 +20,18 @@ export interface VectorWrite {
   metadata: { lang: string; title: string };
 }
 
+export interface KnownPage {
+  revId: number;
+  contentHash: string | null;
+}
+
 export interface IngestTarget {
   getRev(lang: WikiLang, title: string): Promise<number | null>;
   listRevs?(lang: WikiLang): Promise<Map<string, number>>;
+  /** Revision and content hash per title, in one pass over pages. Preferred over listRevs. */
+  listPages?(lang: WikiLang): Promise<Map<string, KnownPage>>;
+  /** Record a new revision for a page whose rendered content did not change (no FTS work). */
+  touchRev?(lang: WikiLang, title: string, revId: number): Promise<void>;
   /** Titles whose image_url is still empty. Used so a later ingest can fill portraits without re-parsing HTML. */
   titlesMissingImage?(lang: WikiLang): Promise<Set<string>>;
   patchImage?(lang: WikiLang, title: string, imageUrl: string): Promise<void>;
@@ -28,6 +44,7 @@ export interface IngestTarget {
 export interface IngestStats {
   seen: number;
   updated: number;
+  /** Same revision, or a new revision whose rendered content hash matched. */
   skipped: number;
   failed: number;
   /** Portraits saved onto pages whose revision did not change. */
@@ -36,6 +53,42 @@ export interface IngestStats {
 
 export function vectorId(lang: string, title: string): string {
   return createHash("sha256").update(`${lang}\0${title}`).digest("hex").slice(0, 32);
+}
+
+/** Hash of everything ingest stores for a page, so an unchanged re-render can skip D1 writes. */
+export function contentHash(page: StoredPage): string {
+  const fields = [
+    page.url,
+    page.counterpart ?? null,
+    page.infobox,
+    page.sections,
+    page.searchText,
+    page.body,
+    page.truncated,
+    page.imageUrl ?? null,
+  ];
+  return createHash("sha256").update(JSON.stringify(fields)).digest("hex").slice(0, 32);
+}
+
+/**
+ * Make sure pages_fts is keyed by pages.rowid (migration 0002). One row read.
+ * "migrate" applies the migration (local SQLite); "require" throws with instructions (remote D1),
+ * so a remote ingest never mixes old title-keyed FTS rows with rowid-keyed ones.
+ */
+export async function ensureFtsRowidSchema(sql: SqlExecutor, mode: "migrate" | "require"): Promise<void> {
+  try {
+    await sql.all(`SELECT content_hash FROM pages LIMIT 1`, []);
+    return;
+  } catch (error) {
+    if (!isMissingColumnError(error)) throw error;
+  }
+  if (mode === "require") {
+    throw new Error(
+      `D1 is missing migration 0002 (pages_fts keyed by rowid). Apply it once, then re-run: ` +
+        `npx wrangler d1 execute stardew-wiki --remote --file ${FTS_ROWID_MIGRATION_FILE}`,
+    );
+  }
+  for (const statement of FTS_ROWID_MIGRATION_STATEMENTS) await sql.run(statement, []);
 }
 
 export async function ensureImageColumn(sql: SqlExecutor): Promise<void> {
@@ -61,6 +114,16 @@ export function targetFromSql(sql: SqlExecutor): IngestTarget {
     },
     put(page) {
       return upsertStoredPage(sql, page);
+    },
+    async listPages(lang) {
+      const rows = await sql.all<{ title: string; rev_id: number; content_hash: string | null }>(
+        `SELECT title, rev_id, content_hash FROM pages WHERE lang = ?`,
+        [lang],
+      );
+      return new Map(rows.map((row) => [row.title, { revId: row.rev_id, contentHash: row.content_hash ?? null }]));
+    },
+    async touchRev(lang, title, revId) {
+      await sql.run(`UPDATE pages SET rev_id = ?, updated_at = ? WHERE lang = ? AND title = ?`, [revId, Date.now(), lang, title]);
     },
     putMany(pages) {
       return upsertStoredPages(sql, pages);
@@ -112,7 +175,15 @@ export async function ingestWiki(options: {
   for (const lang of options.langs) {
     const titles = await options.wiki.listTitles(lang, options.limit);
     log(`${lang}: ${titles.length} titles`);
-    const known = options.target.listRevs ? await options.target.listRevs(lang) : null;
+    let known: Map<string, number> | null = null;
+    let hashes: Map<string, string | null> | null = null;
+    if (options.target.listPages) {
+      const listed = await options.target.listPages(lang);
+      known = new Map([...listed].map(([title, state]) => [title, state.revId]));
+      hashes = new Map([...listed].map(([title, state]) => [title, state.contentHash]));
+    } else if (options.target.listRevs) {
+      known = await options.target.listRevs(lang);
+    }
     const missingImages = options.target.titlesMissingImage ? await options.target.titlesMissingImage(lang) : null;
     for (const batch of chunks(titles, 20)) {
       let metas: PageMeta[] = [];
@@ -147,7 +218,7 @@ export async function ingestWiki(options: {
             log(`skip ${lang}:${meta.title} (no parse)`);
             return null;
           }
-          return toStoredPage({
+          const stored = toStoredPage({
             lang,
             title: page.title,
             url: pageUrl(lang, page.title),
@@ -156,6 +227,8 @@ export async function ingestWiki(options: {
             counterpart: meta.counterpart,
             imageUrl: meta.imageUrl,
           });
+          stored.contentHash = contentHash(stored);
+          return stored;
         } catch (error) {
           if (error instanceof WikiBlockedError) throw error;
           stats.failed += 1;
@@ -163,7 +236,19 @@ export async function ingestWiki(options: {
           return null;
         }
       });
-      const written = rendered.filter((page): page is StoredPage => page !== null);
+      const written: StoredPage[] = [];
+      for (const page of rendered) {
+        if (!page) continue;
+        const previous = hashes?.get(page.title);
+        if (previous && previous === page.contentHash && options.target.touchRev) {
+          // New revision, same stored content: bump rev_id only. No FTS delete/insert, no re-embed.
+          await options.target.touchRev(lang, page.title, page.revId);
+          known?.set(page.title, page.revId);
+          stats.skipped += 1;
+          continue;
+        }
+        written.push(page);
+      }
       if (written.length > 0) {
         if (options.target.putMany) await options.target.putMany(written);
         else {
@@ -171,6 +256,9 @@ export async function ingestWiki(options: {
         }
         if (known) {
           for (const page of written) known.set(page.title, page.revId);
+        }
+        if (hashes) {
+          for (const page of written) hashes.set(page.title, page.contentHash ?? null);
         }
         if (missingImages) {
           for (const page of written) {
